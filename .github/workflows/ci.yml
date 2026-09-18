@@ -1,0 +1,86 @@
+name: CI
+
+# Quality gates for every push and pull request. The Azure deployment workflow
+# runs the same checks again before it builds an image, so a green CI run here is
+# a fast signal and the deploy run is the gate that actually blocks a release.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Lint, typecheck, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      # The integration tests talk to a real PostgreSQL, which is the point of
+      # them — they cover migrations, constraints and the advisory locks the
+      # backup system depends on, none of which a mock would exercise.
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: dropbox_reseller_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/dropbox_reseller_test?schema=public
+      # Test-only values. Not secrets, not reused anywhere, and long enough to
+      # satisfy the production validators the tests exercise.
+      AUTH_SECRET: ci-auth-secret-value-not-used-in-production
+      ENCRYPTION_KEY: ci-encryption-key-value-not-used-in-production
+      MFA_ENCRYPTION_KEY: ci-mfa-encryption-key-value-not-used-in-production
+      MFA_ISSUER: Dropbox Reseller CI
+      NEXT_TELEMETRY_DISABLED: '1'
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate Prisma schema
+        run: npx prisma validate
+
+      - name: Generate Prisma client
+        run: npx prisma generate
+
+      - name: Apply migrations
+        # `migrate deploy` is what production runs, so CI proves the same path
+        # works against an empty PostgreSQL 16 before anything ships.
+        run: npx prisma migrate deploy
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm run test
+
+      - name: Build
+        run: npm run build
+
+      - name: Build seed bundle
+        # Proves the production seed compiles. The runtime image has no tsx, so a
+        # break here would only otherwise surface during a live deployment.
+        run: npm run seed:build

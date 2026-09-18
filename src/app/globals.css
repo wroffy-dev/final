@@ -1,0 +1,1107 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+  Brand tokens are injected at runtime from WebsiteSettings by <BrandStyle />.
+  The values here are only the boot defaults used before settings load.
+*/
+:root {
+  --brand-primary: 0 97 255;
+  --brand-secondary: 11 27 52;
+  --brand-accent1: 26 193 165;
+  --brand-accent2: 255 138 61;
+  --brand-background: 255 255 255;
+  --brand-text: 11 27 52;
+  --brand-muted: 91 107 133;
+  --brand-border: 227 232 240;
+
+  --font-heading: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-body: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-nav: var(--font-body);
+  --font-button: var(--font-body);
+  --font-heading-weight: 700;
+  --font-body-weight: 400;
+  --font-nav-weight: 500;
+  --font-button-weight: 600;
+  --font-base-size: 16px;
+  --font-heading-leading: 1.15;
+  --font-body-leading: 1.6;
+  --font-heading-tracking: -0.02em;
+  --font-body-tracking: 0em;
+  --font-nav-size: 0.9375rem;
+  --font-button-size: 0.875rem;
+  --font-heading-scale: 1;
+
+  /*
+    Admin shell tokens.
+
+    The admin's dark navigation chrome is defined once, here. Components never
+    write a hex value: they use the Tailwind colours mapped onto these channels
+    (`bg-admin-sidebar`, `text-admin-nav/70`, `border-admin-nav/10`), so
+    retuning the whole shell is a change to these four lines.
+
+    Channels rather than hex so Tailwind's alpha modifier works on all of them —
+    which is what lets every translucent overlay in the spec
+    (rgba(255,255,255,.08) and friends) stay token-driven.
+  */
+  --admin-sidebar-bg: 0 50 66;
+  /* A shade deeper than the sidebar so the header reads as its own band while
+     still belonging to the same surface. */
+  --admin-header-bg: 0 43 57;
+  --admin-nav-fg: 255 255 255;
+  --admin-workspace-bg: 246 248 250;
+
+  /* Named derivations, for the few places that need a value rather than a
+     Tailwind class (scrollbars, focus rings, the nested-nav guide). */
+  --admin-border: rgb(var(--admin-nav-fg) / 0.1);
+  --admin-nav-muted: rgb(var(--admin-nav-fg) / 0.7);
+  --admin-nav-subtle: rgb(var(--admin-nav-fg) / 0.55);
+  --admin-nav-hover: rgb(var(--admin-nav-fg) / 0.06);
+  --admin-nav-active: rgb(var(--admin-nav-fg) / 0.08);
+  --admin-nav-guide: rgb(var(--admin-nav-fg) / 0.12);
+  --admin-accent: rgb(var(--brand-primary));
+
+  /* Global layout tokens — a section's own design panel overrides these. */
+  --layout-container: 72rem;
+  --layout-gutter: 1.5rem;
+  --layout-section-spacing: 5rem;
+  --layout-section-spacing-mobile: 3rem;
+  --layout-radius: 0.75rem;
+  --layout-card-radius: 1rem;
+  --btn-radius: 0.5rem;
+  --btn-padding-x: 1.25rem;
+  --btn-padding-y: 0.625rem;
+  --btn-transform: none;
+}
+
+@layer components {
+  /*
+   * The slider track.
+   *
+   * A scroll-snap container rather than a transformed strip: touch swiping,
+   * momentum, and the fact that a keyboard and a screen reader can already
+   * reach every slide all come from the browser, which is why no slider
+   * library is needed for any of this.
+   *
+   * How many slides are visible is three custom properties set per section,
+   * read here so the count changes at the breakpoints without a resize
+   * listener and without a re-render.
+   */
+  .cms-slider-track {
+    display: flex;
+    gap: var(--cms-slider-gap, 24px);
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    scrollbar-width: none;
+    /* The track scrolls; the page never does. */
+    overscroll-behavior-x: contain;
+    padding-bottom: 2px;
+  }
+
+  .cms-slider-track::-webkit-scrollbar {
+    display: none;
+  }
+
+  .cms-slider-track > * {
+    flex: 0 0
+      calc(
+        (100% - (var(--cms-slider-mobile, 1) - 1) * var(--cms-slider-gap, 24px)) /
+          var(--cms-slider-mobile, 1)
+      );
+    scroll-snap-align: start;
+    /* Without this a wide slide refuses to shrink and the track overflows. */
+    min-width: 0;
+  }
+
+  @media (min-width: 768px) {
+    .cms-slider-track > * {
+      flex-basis: calc(
+        (100% - (var(--cms-slider-tablet, 2) - 1) * var(--cms-slider-gap, 24px)) /
+          var(--cms-slider-tablet, 2)
+      );
+    }
+  }
+
+  @media (min-width: 1024px) {
+    .cms-slider-track > * {
+      flex-basis: calc(
+        (100% - (var(--cms-slider-desktop, 3) - 1) * var(--cms-slider-gap, 24px)) /
+          var(--cms-slider-desktop, 3)
+      );
+    }
+  }
+
+  /* A dragged track must not also select the text inside it. */
+  .cms-slider-track.is-dragging {
+    cursor: grabbing;
+    user-select: none;
+    /*
+     * Mandatory snapping re-snaps the track on every write to `scrollLeft`,
+     * so a drag would jump a slide at a time instead of following the pointer.
+     * It comes back the moment the pointer is released, which is what settles
+     * the track on a slide edge.
+     */
+    scroll-snap-type: none;
+  }
+
+  .cms-slider-track.is-dragging * {
+    pointer-events: none;
+  }
+}
+
+@layer base {
+  /*
+   * A grid with no explicit columns must still fit its container.
+   *
+   * `grid gap-5 lg:grid-cols-3` is the shape used all over this codebase, and
+   * below `lg` it leaves `grid-template-columns: none` — so the single
+   * implicit column is auto-sized, and an item whose min-content is wide (a
+   * long lead name beside a "View all" link, a card of nowrap rows) makes the
+   * column wider than the page. The admin dashboard was 502px wide in a 320px
+   * viewport because of it, and the page scrolled sideways.
+   *
+   * `minmax(0, 1fr)` caps that column at the container's width, which is what
+   * `grid-cols-1` would have given each of those 159 grids. Declaring it once
+   * in the base layer fixes them together and covers the next grid written
+   * without a base column count, and every `grid-cols-*` utility still wins —
+   * utilities are a later layer, so a breakpoint's columns override this
+   * exactly as they did before.
+   *
+   * Safe because nothing here uses `grid-flow-col`, which is the one case that
+   * wants wide implicit columns.
+   */
+  .grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  html {
+    font-size: var(--font-base-size);
+    -webkit-text-size-adjust: 100%;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-surface text-content antialiased;
+    font-family: var(--font-body);
+    font-weight: var(--font-body-weight);
+    line-height: var(--font-body-leading);
+    letter-spacing: var(--font-body-tracking);
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-heading);
+    font-weight: var(--font-heading-weight);
+    line-height: var(--font-heading-leading);
+    letter-spacing: var(--font-heading-tracking);
+    @apply text-balance;
+  }
+
+  :focus-visible {
+    @apply outline-none ring-2 ring-brand ring-offset-2 ring-offset-surface;
+  }
+
+  ::selection {
+    @apply bg-brand/20;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
+
+@layer components {
+  /* Skip link for keyboard users */
+  .skip-link {
+    @apply sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-[100]
+           focus:rounded-md focus:bg-brand focus:px-4 focus:py-2 focus:text-white;
+  }
+
+  /*
+    Admin shell.
+
+    Only what Tailwind cannot express lives here — scrollbar styling and the
+    focus ring's offset colour. Everything else is a token-backed utility class
+    on the component itself, so the markup still says what it means.
+  */
+  .admin-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: rgb(var(--admin-nav-fg) / 0.18) transparent;
+  }
+  .admin-scroll::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .admin-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .admin-scroll::-webkit-scrollbar-thumb {
+    background-color: rgb(var(--admin-nav-fg) / 0.18);
+    border-radius: 9999px;
+  }
+  .admin-scroll:hover::-webkit-scrollbar-thumb {
+    background-color: rgb(var(--admin-nav-fg) / 0.28);
+  }
+
+  /*
+    Focus ring for controls sitting on the dark chrome. Tailwind's default
+    offset colour is white, which halos on navy; this offsets against the
+    surface the control actually sits on.
+  */
+  .admin-focus {
+    @apply focus-visible:outline-none focus-visible:ring-2;
+    --tw-ring-color: rgb(var(--admin-nav-fg) / 0.65);
+    --tw-ring-offset-color: rgb(var(--admin-sidebar-bg));
+    @apply focus-visible:ring-offset-2;
+  }
+  .admin-focus-header {
+    --tw-ring-offset-color: rgb(var(--admin-header-bg));
+  }
+
+  /* Rich text rendered from the CMS */
+  .prose-cms {
+    @apply text-[0.975rem] leading-relaxed text-muted;
+  }
+  .prose-cms > * + * { @apply mt-4; }
+  .prose-cms h2 { @apply mt-10 text-2xl font-bold text-content sm:text-3xl; }
+  .prose-cms h3 { @apply mt-8 text-xl font-semibold text-content; }
+  .prose-cms h4 { @apply mt-6 text-lg font-semibold text-content; }
+  .prose-cms p { @apply text-muted; }
+  .prose-cms a { @apply font-medium text-brand underline underline-offset-4 hover:no-underline; }
+  .prose-cms ul { @apply list-disc space-y-2 pl-5; }
+  .prose-cms ol { @apply list-decimal space-y-2 pl-5; }
+  .prose-cms blockquote {
+    @apply border-l-4 border-brand/30 pl-4 italic text-content;
+  }
+  .prose-cms img { @apply rounded-xl border border-hairline; }
+  .prose-cms code {
+    @apply rounded bg-muted/10 px-1.5 py-0.5 font-mono text-[0.85em] text-content;
+  }
+  .prose-cms pre {
+    @apply overflow-x-auto rounded-xl bg-[rgb(var(--brand-secondary))] p-4 text-sm text-white;
+  }
+  .prose-cms pre code { @apply bg-transparent p-0 text-inherit; }
+  .prose-cms table { @apply w-full border-collapse text-sm; }
+  .prose-cms th, .prose-cms td { @apply border border-hairline px-3 py-2 text-left; }
+  .prose-cms th { @apply bg-muted/5 font-semibold text-content; }
+  .prose-cms hr { @apply my-10 border-hairline; }
+}
+
+@layer utilities {
+  .text-balance { text-wrap: balance; }
+  .text-pretty { text-wrap: pretty; }
+
+  /* Horizontal scroll container used by responsive data tables */
+  .scroll-x {
+    @apply overflow-x-auto;
+    scrollbar-width: thin;
+  }
+  .scroll-x::-webkit-scrollbar { height: 8px; }
+  .scroll-x::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-hairline;
+  }
+}
+
+@layer components {
+  /*
+    Section design runtime.
+
+    Every CMS section renders as `.cms-section`. Its design panel writes CSS
+    custom properties — inline for desktop, in one media query per breakpoint for
+    tablet and mobile — and the rules below consume them. That keeps arbitrary
+    admin values (37px, 4.5vh, 85%) working without generating any Tailwind.
+  */
+  .cms-section {
+    display: var(--sec-display, block);
+    position: relative;
+    isolation: isolate;
+    margin: var(--sec-mt, 0) var(--sec-mr, 0) var(--sec-mb, 0) var(--sec-ml, 0);
+    padding: var(--sec-pt, var(--layout-section-spacing)) var(--sec-pr, 0)
+             var(--sec-pb, var(--layout-section-spacing)) var(--sec-pl, 0);
+    min-height: var(--sec-min-h, auto);
+    background-color: var(--sec-bg, transparent);
+    color: var(--sec-text, inherit);
+  }
+
+  @media (max-width: 767px) {
+    .cms-section {
+      padding-top: var(--sec-pt, var(--layout-section-spacing-mobile));
+      padding-bottom: var(--sec-pb, var(--layout-section-spacing-mobile));
+    }
+  }
+
+  .cms-section h1,
+  .cms-section h2,
+  .cms-section h3,
+  .cms-section h4 {
+    color: var(--sec-heading-color, inherit);
+  }
+
+  .cms-section :where(h1, h2, h3) {
+    font-size: var(--sec-heading-size, inherit);
+  }
+
+  .cms-container {
+    width: 100%;
+    max-width: var(--sec-max-w, var(--layout-container));
+    margin-inline: auto;
+    padding-inline: var(--sec-px, 1rem);
+    font-size: var(--sec-body-size, inherit);
+    text-align: var(--sec-align, initial);
+  }
+
+  @media (min-width: 640px) {
+    .cms-container { padding-inline: var(--sec-px, var(--layout-gutter)); }
+  }
+
+  /* Background image / gradient layer, painted behind the content. */
+  .cms-section-layer,
+  .cms-section-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+  }
+
+  /*
+    Card grid. The renderer resolves the column count per breakpoint (design
+    panel wins over the block's own setting) and writes the three variables
+    below onto the grid element, so no Tailwind column classes are generated.
+  */
+  .cms-grid {
+    display: grid;
+    grid-template-columns: repeat(var(--grid-cols, 3), minmax(0, 1fr));
+    column-gap: var(--sec-col-gap, var(--sec-card-gap, 1.5rem));
+    row-gap: var(--sec-row-gap, var(--sec-card-gap, 1.5rem));
+  }
+
+  @media (max-width: 1023px) {
+    .cms-grid { grid-template-columns: repeat(var(--grid-cols-tablet, 2), minmax(0, 1fr)); }
+  }
+
+  @media (max-width: 767px) {
+    .cms-grid { grid-template-columns: repeat(var(--grid-cols-mobile, 1), minmax(0, 1fr)); }
+  }
+
+  .cms-stack > * + * { margin-top: var(--sec-content-gap, 1rem); }
+
+  /* Section colour overrides reach buttons and links without !important. */
+  .cms-section .cms-btn-primary {
+    background-color: var(--sec-button, rgb(var(--brand-primary)));
+    color: var(--sec-button-text, #fff);
+    border-color: transparent;
+  }
+  .cms-section .cms-btn-outline {
+    border-color: var(--sec-button, rgb(var(--brand-primary)));
+    color: var(--sec-button, rgb(var(--brand-primary)));
+    background-color: transparent;
+  }
+  .cms-section .cms-accent { color: var(--sec-primary, rgb(var(--brand-primary))); }
+  .cms-section .prose-cms a { color: var(--sec-link, rgb(var(--brand-primary))); }
+
+  /* Media constrained by the section's responsive image sizing. */
+  .cms-media {
+    width: var(--sec-img-w, 100%);
+    height: var(--sec-img-h, auto);
+    max-width: 100%;
+  }
+
+  /* Global button tokens from Settings -> Website design. */
+  .btn-tokens {
+    border-radius: var(--btn-radius);
+    padding-inline: var(--btn-padding-x);
+    padding-block: var(--btn-padding-y);
+    font-family: var(--font-button);
+    font-weight: var(--font-button-weight);
+    font-size: var(--font-button-size);
+    text-transform: var(--btn-transform);
+  }
+
+  .nav-tokens {
+    font-family: var(--font-nav);
+    font-weight: var(--font-nav-weight);
+    font-size: var(--font-nav-size);
+  }
+
+  /* -------------------------------------------------------------------------
+   * Form design engine
+   *
+   * One stylesheet for every form on the site — lead, contact, popup, hero,
+   * product enquiry, CMS block. Each rule reads a CSS custom property with a
+   * fallback equal to the form's original appearance, so a form nobody has
+   * restyled sets no variables and renders exactly as it always did.
+   *
+   * This is why arbitrary admin values work at three breakpoints without
+   * generating a byte of extra Tailwind: the renderer emits variables, and
+   * these rules consume them.
+   * ---------------------------------------------------------------------- */
+
+  .fd-form {
+    width: var(--fd-width, 100%);
+    max-width: var(--fd-max-w, none);
+    margin: var(--fd-margin, 0);
+    padding: var(--fd-padding, 0);
+    background-color: var(--fd-bg, transparent);
+    background-image: var(--fd-bg-image, none);
+    background-size: cover;
+    background-position: center;
+    border-style: var(--fd-border-style, none);
+    border-width: var(--fd-border-width, 0);
+    border-color: var(--fd-border-color, transparent);
+    border-radius: var(--fd-radius, 0);
+    box-shadow: var(--fd-shadow, none);
+    font-family: var(--fd-base-font, inherit);
+    font-size: var(--fd-base-size, inherit);
+    color: var(--fd-base-color, inherit);
+    letter-spacing: var(--fd-base-spacing, normal);
+    line-height: var(--fd-base-line, inherit);
+  }
+
+  /* Only paid for when an admin actually asks for it. */
+  .fd-form[style*="--fd-blur"] {
+    backdrop-filter: blur(var(--fd-blur, 0px));
+  }
+
+  .fd-grid {
+    display: grid;
+    grid-template-columns: repeat(var(--fd-cols, 1), minmax(0, 1fr));
+    column-gap: var(--fd-col-gap, 1rem);
+    row-gap: var(--fd-row-gap, 1rem);
+  }
+
+  /* A field spans at most the number of columns that exist, so a 3-column
+     field in a 1-column layout does not overflow the grid. */
+  .fd-field {
+    grid-column: span min(var(--fd-span, 1), var(--fd-cols, 1));
+  }
+
+  .fd-label {
+    display: block;
+    font-family: var(--fd-label-font, inherit);
+    font-size: var(--fd-label-size, 0.875rem);
+    font-weight: var(--fd-label-weight, 500);
+    line-height: var(--fd-label-line, 1.4);
+    letter-spacing: var(--fd-label-spacing, normal);
+    text-transform: var(--fd-label-transform, none);
+    color: var(--fd-label-color, rgb(var(--brand-text)));
+    margin-bottom: var(--fd-label-gap, 0.375rem);
+  }
+
+  .fd-required { color: var(--fd-required-color, #dc2626); }
+
+  /* Label beside the control rather than above it. */
+  .fd-field-left {
+    display: grid;
+    grid-template-columns: var(--fd-label-w, 10rem) minmax(0, 1fr);
+    column-gap: 0.75rem;
+    align-items: start;
+  }
+  .fd-field-left > .fd-label { margin-bottom: 0; padding-top: 0.5rem; }
+  @media (max-width: 767px) {
+    /* A two-column field row leaves no usable width on a phone. */
+    .fd-field-left { grid-template-columns: minmax(0, 1fr); }
+    .fd-field-left > .fd-label { padding-top: 0; margin-bottom: var(--fd-label-gap, 0.375rem); }
+  }
+
+  /*
+   * Floating labels.
+   *
+   * The label is a real <label>, positioned over an input whose placeholder is
+   * a single space — :placeholder-shown then tells us whether the field is
+   * empty without any JavaScript, and the accessible name is unaffected.
+   */
+  .fd-field-floating { position: relative; }
+  .fd-field-floating > .fd-label {
+    position: absolute;
+    left: 0.75rem;
+    top: 0.5rem;
+    margin: 0;
+    padding: 0 0.25rem;
+    background: var(--fd-input-bg, rgb(var(--brand-surface)));
+    font-size: 0.75rem;
+    pointer-events: none;
+    transition: top 120ms ease, font-size 120ms ease;
+  }
+  .fd-field-floating > .fd-control:placeholder-shown + .fd-label {
+    top: 0.9rem;
+    font-size: var(--fd-input-size, 0.875rem);
+  }
+  .fd-field-floating > .fd-control { padding-top: 1.1rem; }
+
+  .fd-control {
+    width: 100%;
+    min-height: var(--fd-input-min-h, var(--fd-input-h, auto));
+    height: var(--fd-input-h, auto);
+    padding: var(--fd-input-padding, 0.5rem 0.75rem);
+    font-family: var(--fd-input-font, inherit);
+    font-size: var(--fd-input-size, 0.875rem);
+    font-weight: var(--fd-input-weight, 400);
+    letter-spacing: var(--fd-input-spacing, normal);
+    color: var(--fd-input-color, rgb(var(--brand-text)));
+    background-color: var(--fd-input-bg, rgb(var(--brand-surface)));
+    border-style: var(--fd-input-border-style, solid);
+    border-width: var(--fd-input-border-width, 1px);
+    border-color: var(--fd-input-border-color, rgb(var(--brand-border)));
+    border-radius: var(--fd-input-radius, 0.5rem);
+    transition: border-color 120ms ease, box-shadow 120ms ease, background-color 120ms ease;
+  }
+
+  /* A textarea must grow, so it takes min-height only — never a fixed height. */
+  textarea.fd-control {
+    height: auto;
+    resize: var(--fd-textarea-resize, vertical);
+  }
+
+  .fd-control::placeholder {
+    font-family: var(--fd-ph-font, inherit);
+    font-size: var(--fd-ph-size, inherit);
+    font-weight: var(--fd-ph-weight, inherit);
+    color: var(--fd-ph-color, rgb(var(--brand-muted)));
+    opacity: var(--fd-ph-opacity, 0.6);
+  }
+
+  .fd-control:hover:not(:disabled):not([aria-invalid='true']) {
+    border-color: var(--fd-input-hover-border, var(--fd-input-border-color, rgb(var(--brand-border))));
+  }
+
+  .fd-control:focus {
+    outline: none;
+    border-color: var(--fd-input-focus-border, rgb(var(--brand-primary)));
+    background-color: var(--fd-input-focus-bg, var(--fd-input-bg, rgb(var(--brand-surface))));
+    box-shadow: 0 0 0 var(--fd-input-focus-ring-w, 2px)
+      var(--fd-input-focus-ring, rgb(var(--brand-primary) / 0.25));
+  }
+
+  .fd-control:disabled,
+  .fd-control[readonly] {
+    background-color: var(--fd-input-disabled-bg, rgb(var(--brand-muted) / 0.05));
+    color: var(--fd-input-disabled-color, rgb(var(--brand-muted)));
+    cursor: not-allowed;
+  }
+  /* A read-only field is still readable, so it keeps the normal cursor. */
+  .fd-control[readonly]:not(:disabled) { cursor: default; }
+
+  .fd-control[aria-invalid='true'] {
+    border-color: var(--fd-input-error-border, #dc2626);
+    background-color: var(--fd-input-error-bg, transparent);
+  }
+
+  .fd-help {
+    font-family: var(--fd-help-font, inherit);
+    font-size: var(--fd-help-size, 0.75rem);
+    font-weight: var(--fd-help-weight, 400);
+    color: var(--fd-help-color, rgb(var(--brand-muted)));
+    margin-top: var(--fd-help-gap, 0.25rem);
+  }
+
+  .fd-error {
+    font-family: var(--fd-err-font, inherit);
+    font-size: var(--fd-err-size, 0.75rem);
+    font-weight: var(--fd-err-weight, 500);
+    color: var(--fd-err-color, #dc2626);
+    margin-top: var(--fd-err-gap, 0.25rem);
+  }
+
+  /* Checkbox and radio groups. */
+  .fd-choices { display: flex; flex-direction: column; gap: var(--fd-choice-gap, 0.5rem); }
+  .fd-choices-horizontal { flex-direction: row; flex-wrap: wrap; gap: var(--fd-choice-gap, 1rem); }
+  .fd-choices-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+    gap: var(--fd-choice-gap, 0.5rem);
+  }
+  .fd-choice { display: flex; align-items: center; gap: 0.5rem; }
+  .fd-choice input {
+    width: var(--fd-choice-size, 1rem);
+    height: var(--fd-choice-size, 1rem);
+    accent-color: var(--fd-choice-accent, rgb(var(--brand-primary)));
+    flex: none;
+  }
+  .fd-choice-label {
+    font-family: var(--fd-label-font, inherit);
+    font-size: var(--fd-label-size, 0.875rem);
+    color: var(--fd-label-color, rgb(var(--brand-text)));
+  }
+
+  .fd-actions { margin-top: var(--fd-button-gap, 1rem); display: flex; }
+  .fd-actions-center { justify-content: center; }
+  .fd-actions-right { justify-content: flex-end; }
+
+  .fd-submit {
+    width: var(--fd-btn-w, auto);
+    height: var(--fd-btn-h, auto);
+    padding: var(--fd-btn-padding, 0.625rem 1.25rem);
+    font-family: var(--fd-btn-font, inherit);
+    font-size: var(--fd-btn-size, 0.875rem);
+    font-weight: var(--fd-btn-weight, 600);
+    letter-spacing: var(--fd-btn-spacing, normal);
+    text-transform: var(--fd-btn-transform, none);
+    color: var(--fd-btn-color, #fff);
+    background-color: var(--fd-btn-bg, rgb(var(--brand-primary)));
+    border-style: var(--fd-btn-border-style, none);
+    border-width: var(--fd-btn-border-width, 0);
+    border-color: var(--fd-btn-border-color, transparent);
+    border-radius: var(--fd-btn-radius, 0.5rem);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    cursor: pointer;
+    transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+  }
+  .fd-submit:disabled { cursor: not-allowed; opacity: 0.65; }
+  .fd-submit-full { width: 100%; }
+
+  .fd-success {
+    background-color: var(--fd-ok-bg, #ecfdf5);
+    color: var(--fd-ok-color, #065f46);
+    border-style: var(--fd-ok-border-style, solid);
+    border-width: var(--fd-ok-border-width, 1px);
+    border-color: var(--fd-ok-border-color, #a7f3d0);
+    border-radius: var(--fd-ok-radius, 0.75rem);
+    padding: var(--fd-ok-padding, 2.5rem 1.5rem);
+  }
+  .fd-success-heading {
+    color: var(--fd-ok-heading, var(--fd-ok-color, #065f46));
+    font-family: var(--fd-base-font, inherit);
+  }
+
+  /* ---------------------------------------------------------------------
+     Blog
+     ---------------------------------------------------------------------
+     The blog reuses the section runtime above for its own sections, and adds
+     the rules below for the parts that are settings rather than sections: the
+     card, the article/sidebar split, the sidebar widgets and the blog-specific
+     type scale. Every value falls back to the site's own token, so a blog with
+     nothing configured looks like the rest of the website.
+  */
+  .blog-root {
+    color: var(--blog-text, inherit);
+    background-color: var(--blog-bg, transparent);
+  }
+  .blog-root .cms-section { background-color: var(--sec-bg, var(--blog-bg, transparent)); }
+
+  /* A slot wrapper that honours the design panel without painting a band. */
+  .cms-slot {
+    display: var(--sec-display, block);
+    margin: var(--sec-mt, 0) var(--sec-mr, 0) var(--sec-mb, var(--blog-widget-gap, 1.5rem))
+            var(--sec-ml, 0);
+    padding: var(--sec-pt, 0) var(--sec-pr, 0) var(--sec-pb, 0) var(--sec-pl, 0);
+    text-align: var(--sec-align, initial);
+  }
+  .cms-slot:last-child { margin-bottom: 0; }
+  /*
+    A widget that decides it has nothing to show (a table of contents on an
+    article with no headings, a post list that came back empty) renders an empty
+    slot. Hiding it keeps the column from growing a gap around nothing.
+  */
+  .cms-slot:empty { display: none; }
+
+  .cms-spacer {
+    height: var(--spacer-h, 2rem);
+  }
+  @media (max-width: 1023px) { .cms-spacer { height: var(--spacer-h-tablet, 2rem); } }
+  @media (max-width: 767px)  { .cms-spacer { height: var(--spacer-h-mobile, 1.5rem); } }
+
+  /* --- type scale ---------------------------------------------------- */
+  .blog-hero__heading {
+    font-size: var(--blog-hero-heading-size, clamp(2rem, 1.4rem + 2.4vw, 3.25rem));
+    font-weight: var(--blog-hero-heading-weight, 700);
+    line-height: var(--blog-hero-heading-lh, 1.12);
+    letter-spacing: var(--blog-hero-heading-ls, -0.02em);
+  }
+  .blog-article__title {
+    font-size: var(--blog-article-title-size, clamp(1.875rem, 1.35rem + 2vw, 2.875rem));
+    font-weight: var(--blog-article-title-weight, 700);
+    line-height: var(--blog-article-title-lh, 1.15);
+    letter-spacing: var(--blog-article-title-ls, -0.02em);
+    color: var(--blog-heading, rgb(var(--brand-text)));
+  }
+  .blog-article__subtitle {
+    font-size: 1.125rem;
+    line-height: 1.6;
+    color: var(--blog-text, rgb(var(--brand-muted)));
+  }
+  .blog-article__excerpt {
+    font-size: 1.0625rem;
+    line-height: 1.7;
+    color: var(--blog-text, rgb(var(--brand-muted)));
+  }
+  .blog-article__lead {
+    font-size: 1.125rem;
+    line-height: 1.75;
+    font-weight: 500;
+    color: rgb(var(--brand-text));
+    margin-bottom: 1.5rem;
+  }
+  .blog-article__caption {
+    font-size: 0.8125rem;
+    color: rgb(var(--brand-muted));
+    text-align: center;
+  }
+  .blog-article__category,
+  .blog-card__category {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 9999px;
+    padding: 0.25rem 0.625rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    background-color: var(--card-category-bg, rgb(var(--brand-primary) / 0.1));
+    color: var(--card-category-color, rgb(var(--brand-primary)));
+  }
+  .blog-article__body {
+    font-size: var(--blog-body-size, 1rem);
+    line-height: var(--blog-body-lh, 1.75);
+  }
+  .blog-article__body h2 {
+    font-size: var(--blog-h2-size, 1.75rem);
+    font-weight: var(--blog-h2-weight, 700);
+    line-height: var(--blog-h2-lh, 1.25);
+    scroll-margin-top: 6rem;
+  }
+  .blog-article__body h3 {
+    font-size: var(--blog-h3-size, 1.3125rem);
+    font-weight: var(--blog-h3-weight, 600);
+    line-height: var(--blog-h3-lh, 1.35);
+    scroll-margin-top: 6rem;
+  }
+  .blog-article__body h4 {
+    font-size: var(--blog-h4-size, 1.125rem);
+    font-weight: var(--blog-h4-weight, 600);
+  }
+  /* Wide content inside a narrow column must scroll, never overflow. */
+  .blog-article__body :where(table) { display: block; overflow-x: auto; max-width: 100%; }
+  .blog-article__body :where(pre) { overflow-x: auto; max-width: 100%; }
+  .blog-article__body :where(img, video, iframe) { max-width: 100%; height: auto; }
+
+  .blog-byline {
+    font-size: var(--blog-meta-size, 0.875rem);
+    color: var(--blog-text, rgb(var(--brand-muted)));
+  }
+  .blog-byline__name { font-weight: 500; color: rgb(var(--brand-text)); }
+
+  .blog-section__heading {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--blog-heading, rgb(var(--brand-text)));
+  }
+
+  /* --- cards ---------------------------------------------------------- */
+  .blog-grid {
+    display: grid;
+    grid-template-columns: repeat(var(--blog-cols, 3), minmax(0, 1fr));
+    column-gap: var(--blog-grid-gap, 1.5rem);
+    row-gap: var(--blog-grid-row-gap, var(--blog-grid-gap, 1.5rem));
+  }
+  @media (max-width: 1023px) {
+    .blog-grid { grid-template-columns: repeat(var(--blog-cols-tablet, 2), minmax(0, 1fr)); }
+  }
+  @media (max-width: 767px) {
+    .blog-grid { grid-template-columns: repeat(var(--blog-cols-mobile, 1), minmax(0, 1fr)); }
+  }
+
+  .blog-card {
+    background-color: var(--card-bg, rgb(var(--brand-background)));
+    border-style: solid;
+    border-width: var(--card-border-width, 1px);
+    border-color: var(--card-border-color, rgb(var(--brand-border)));
+    border-radius: var(--card-radius, var(--layout-card-radius, 1rem));
+    transition: box-shadow 200ms ease, transform 200ms ease, border-color 200ms ease;
+  }
+  .blog-card__body { padding: var(--card-padding, 1.25rem); }
+  .blog-card__media img { transition: transform 300ms ease; }
+  .blog-card__media { border-radius: var(--card-image-radius, 0); overflow: hidden; }
+  .blog-card--shadow:hover { box-shadow: 0 12px 28px rgb(0 0 0 / 0.10) !important; }
+  .blog-card--lift:hover { transform: translateY(-4px); }
+  .blog-card--zoom:hover .blog-card__media img { transform: scale(1.04); }
+
+  .blog-card__title {
+    margin-top: 0.75rem;
+    font-size: var(--card-title-size, 1.125rem);
+    font-weight: var(--card-title-weight, 700);
+    line-height: 1.35;
+    color: var(--card-title-color, rgb(var(--brand-text)));
+  }
+  .blog-card__title a:hover { color: rgb(var(--brand-primary)); }
+  .blog-card__excerpt {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    font-size: 0.875rem;
+    line-height: 1.6;
+    color: var(--card-excerpt-color, rgb(var(--brand-muted)));
+  }
+  .blog-card__meta {
+    font-size: var(--blog-meta-size, 0.75rem);
+    color: var(--card-meta-color, rgb(var(--brand-muted)));
+  }
+  .blog-card__cta {
+    font-size: 0.8125rem;
+    font-weight: 600;
+    color: var(--card-cta-color, rgb(var(--brand-primary)));
+  }
+  .blog-card__tag {
+    display: inline-flex;
+    border-radius: 9999px;
+    border: 1px solid rgb(var(--brand-border));
+    padding: 0.125rem 0.5rem;
+    font-size: 0.6875rem;
+    color: rgb(var(--brand-muted));
+  }
+  .blog-card__tag:hover { border-color: rgb(var(--brand-primary)); color: rgb(var(--brand-primary)); }
+
+  /* --- featured -------------------------------------------------------- */
+  .blog-featured__title {
+    font-size: clamp(1.5rem, 1.1rem + 1.4vw, 2.125rem);
+    font-weight: 700;
+    line-height: 1.2;
+    color: var(--blog-heading, rgb(var(--brand-text)));
+  }
+  .blog-featured__title a:hover { color: rgb(var(--brand-primary)); }
+  .blog-featured__excerpt {
+    font-size: 1rem;
+    line-height: 1.7;
+    color: var(--blog-text, rgb(var(--brand-muted)));
+  }
+  .blog-featured__badge {
+    display: inline-flex;
+    border-radius: 9999px;
+    background-color: rgb(var(--brand-primary));
+    color: #fff;
+    padding: 0.25rem 0.625rem;
+    font-size: 0.6875rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .blog-featured--overlay,
+  .blog-featured--overlay .blog-featured__title,
+  .blog-featured--overlay .blog-featured__excerpt,
+  .blog-featured--overlay .blog-byline,
+  .blog-featured--overlay .blog-byline__name { color: #fff; }
+
+  /* --- chips ----------------------------------------------------------- */
+  .blog-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    font-size: 0.875rem;
+    color: rgb(var(--brand-text));
+    transition: color 120ms ease, background-color 120ms ease, border-color 120ms ease;
+  }
+  .blog-chip--pill,
+  .blog-chip--button {
+    border: 1px solid rgb(var(--brand-border));
+    border-radius: 9999px;
+    padding: 0.4375rem 0.875rem;
+  }
+  .blog-chip--button { border-radius: var(--btn-radius, 0.5rem); }
+  .blog-chip--underline { border-bottom: 2px solid transparent; padding: 0.375rem 0.125rem; }
+  .blog-chip:hover { color: rgb(var(--brand-primary)); border-color: rgb(var(--brand-primary)); }
+  .blog-chip--pill.blog-chip--active,
+  .blog-chip--button.blog-chip--active {
+    background-color: var(--blog-primary, rgb(var(--brand-primary)));
+    border-color: var(--blog-primary, rgb(var(--brand-primary)));
+    color: #fff;
+  }
+  .blog-chip--underline.blog-chip--active {
+    border-bottom-color: var(--blog-primary, rgb(var(--brand-primary)));
+    color: var(--blog-primary, rgb(var(--brand-primary)));
+    font-weight: 600;
+  }
+  .blog-chip__count { font-size: 0.75rem; opacity: 0.7; }
+
+  /* --- table of contents ----------------------------------------------- */
+  .blog-toc__heading {
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--widget-heading, rgb(var(--brand-text)));
+  }
+  .blog-toc__list { margin-top: 0.75rem; display: grid; gap: 0.375rem; }
+  .blog-toc__link {
+    display: block;
+    font-size: 0.875rem;
+    line-height: 1.45;
+    color: rgb(var(--brand-muted));
+    border-left: 2px solid transparent;
+    padding-left: 0.625rem;
+  }
+  .blog-toc__link:hover { color: rgb(var(--brand-primary)); }
+  .blog-toc__link--active {
+    color: var(--widget-link, rgb(var(--brand-primary)));
+    border-left-color: var(--widget-link, rgb(var(--brand-primary)));
+    font-weight: 500;
+  }
+  .blog-toc-panel { border: 1px solid rgb(var(--brand-border)); }
+
+  /* --- share ----------------------------------------------------------- */
+  .blog-share__heading { font-size: 0.875rem; font-weight: 600; color: rgb(var(--brand-text)); }
+  .blog-share__button {
+    border: 1px solid rgb(var(--brand-border));
+    border-radius: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    font-size: 0.8125rem;
+    color: rgb(var(--brand-muted));
+    background: transparent;
+    min-height: 2.25rem;
+    transition: color 120ms ease, border-color 120ms ease, background-color 120ms ease;
+  }
+  .blog-share__button--icon { width: 2.25rem; padding: 0; border-radius: 9999px; }
+  .blog-share__button--solid { background-color: rgb(var(--brand-primary) / 0.06); }
+  .blog-share__button:hover {
+    color: rgb(var(--brand-primary));
+    border-color: rgb(var(--brand-primary));
+  }
+
+  /* --- author ---------------------------------------------------------- */
+  .blog-author__name { font-weight: 600; color: rgb(var(--brand-text)); }
+  .blog-author__role { font-size: 0.8125rem; color: rgb(var(--brand-muted)); }
+  .blog-author__bio { font-size: 0.875rem; line-height: 1.6; color: rgb(var(--brand-muted)); }
+  .blog-author__social {
+    border: 1px solid rgb(var(--brand-border));
+    color: rgb(var(--brand-muted));
+  }
+  .blog-author__social:hover { color: rgb(var(--brand-primary)); border-color: rgb(var(--brand-primary)); }
+
+  /* --- prev / next ------------------------------------------------------ */
+  .blog-prevnext__label {
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: rgb(var(--brand-muted));
+  }
+  .blog-prevnext__title { font-size: 0.9375rem; font-weight: 600; color: rgb(var(--brand-text)); }
+  .blog-prevnext:hover .blog-prevnext__title { color: rgb(var(--brand-primary)); }
+
+  /* --- sidebar widgets --------------------------------------------------- */
+  .blog-widget__title {
+    font-size: var(--blog-sidebar-heading-size, 0.8125rem);
+    font-weight: var(--blog-sidebar-heading-weight, 700);
+    letter-spacing: var(--blog-sidebar-heading-ls, 0.08em);
+    text-transform: uppercase;
+    color: var(--widget-heading, var(--panel-heading, rgb(var(--brand-text))));
+  }
+  .blog-widget__standalone-heading {
+    font-size: 1.125rem;
+    font-weight: 700;
+    color: var(--widget-heading, rgb(var(--brand-text)));
+  }
+  .blog-widget__text {
+    font-size: 0.875rem;
+    line-height: 1.6;
+    color: var(--panel-text, rgb(var(--brand-muted)));
+  }
+  .blog-widget__meta { font-size: 0.75rem; color: rgb(var(--brand-muted)); }
+  .blog-widget__post-title {
+    font-size: 0.875rem;
+    font-weight: 500;
+    line-height: 1.4;
+    color: var(--panel-text, rgb(var(--brand-text)));
+  }
+  .group:hover .blog-widget__post-title { color: var(--widget-link, rgb(var(--brand-primary))); }
+  .blog-widget__number {
+    width: 1.5rem;
+    font-size: 1rem;
+    font-weight: 700;
+    color: rgb(var(--brand-primary) / 0.35);
+  }
+  .blog-widget__list { display: grid; gap: 0.125rem; }
+  .blog-widget__link {
+    display: block;
+    border-radius: 0.375rem;
+    padding: 0.375rem 0.5rem;
+    margin-inline: -0.5rem;
+    font-size: 0.875rem;
+    color: var(--panel-text, rgb(var(--brand-text)));
+  }
+  .blog-widget__link:hover {
+    background-color: rgb(var(--brand-muted) / 0.06);
+    color: var(--widget-link, rgb(var(--brand-primary)));
+  }
+  .blog-widget__prose { font-size: 0.875rem; }
+  .blog-widget__prose h2 { font-size: 1.125rem; margin-top: 1rem; }
+  .blog-widget__prose h3 { font-size: 1rem; margin-top: 0.75rem; }
+  .blog-widget--sticky { position: sticky; top: var(--blog-sticky-offset, 6rem); }
+
+  /* --- article / sidebar layout ------------------------------------------ */
+  .blog-layout {
+    display: grid;
+    gap: var(--blog-sidebar-gap, 3rem);
+    grid-template-columns: minmax(0, 1fr) minmax(0, var(--blog-sidebar-width, 30%));
+    grid-template-areas: "top aside" "bottom aside";
+    align-items: start;
+  }
+  .blog-layout--left {
+    grid-template-columns: minmax(0, var(--blog-sidebar-width, 30%)) minmax(0, 1fr);
+    grid-template-areas: "aside top" "aside bottom";
+  }
+  .blog-layout--no-sidebar {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "top" "bottom";
+  }
+  .blog-layout__top { grid-area: top; min-width: 0; }
+  .blog-layout__bottom { grid-area: bottom; min-width: 0; }
+  .blog-layout__aside { grid-area: aside; min-width: 0; }
+  .blog-layout__aside--sticky { position: sticky; top: var(--blog-sticky-offset, 6rem); }
+
+  @media (max-width: 1023px) {
+    .blog-layout,
+    .blog-layout--left {
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-areas: "top" "bottom" "aside";
+      gap: 2.5rem;
+    }
+    .blog-layout--aside-above-bottom,
+    .blog-layout--left.blog-layout--aside-above-bottom {
+      grid-template-areas: "top" "aside" "bottom";
+    }
+    .blog-layout--aside-hidden .blog-layout__aside { display: none; }
+    .blog-layout__aside--sticky { position: static; }
+  }
+
+  /* Sections inside the article column are stacked, not full-width bands. */
+  .cms-article-column .cms-section {
+    padding-top: var(--sec-pt, 0);
+    padding-bottom: var(--sec-pb, 2rem);
+    background-color: var(--sec-bg, transparent);
+  }
+  @media (max-width: 767px) {
+    .cms-article-column .cms-section {
+      padding-top: var(--sec-pt, 0);
+      padding-bottom: var(--sec-pb, 1.5rem);
+    }
+  }
+  .cms-article-column .cms-section:last-child { padding-bottom: var(--sec-pb, 0); }
+  /* A coloured section inside the article column is a card, not a page band. */
+  .cms-article-column .cms-section--card {
+    border-radius: var(--layout-card-radius, 1rem);
+    padding: var(--sec-pt, 2.5rem) var(--sec-pr, 2rem) var(--sec-pb, 2.5rem) var(--sec-pl, 2rem);
+    overflow: hidden;
+  }
+  .blog-layout__top,
+  .blog-layout__bottom { max-width: var(--blog-article-width, none); }
+  .blog-layout--no-sidebar .blog-layout__top,
+  .blog-layout--no-sidebar .blog-layout__bottom { margin-inline: auto; }
+
+  /*
+    The floating share rail. Pinned to the left of the article column on wide
+    screens only — it needs a gutter to live in, and the block falls back to the
+    inline row below this width.
+  */
+  .blog-share-rail {
+    position: sticky;
+    top: var(--blog-sticky-offset, 6rem);
+    float: left;
+    margin-left: -4.5rem;
+    width: 3rem;
+  }
+}

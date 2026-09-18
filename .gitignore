@@ -1,0 +1,26 @@
+node_modules
+.next
+out
+dist
+build
+.env
+.env.local
+.env.*.local
+*.log
+npm-debug.log*
+.DS_Store
+coverage
+.vercel
+tsconfig.tsbuildinfo
+next-env.d.ts
+/public/uploads/*
+!/public/uploads/.gitkeep
+
+# Local media, when UPLOAD_DIR points inside the project. Production data.
+/data/
+
+# Local backup archives. Never committed: an archive contains the database.
+/backups/
+
+# Compiled seed bundle — rebuilt by `npm run seed:build` during the Docker build.
+prisma/seed.mjs

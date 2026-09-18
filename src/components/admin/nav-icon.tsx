@@ -1,0 +1,60 @@
+import type { ComponentType, SVGProps } from 'react';
+import {
+  LayoutDashboard,
+  Inbox,
+  Kanban,
+  Building2,
+  ChartBar,
+  LayoutTemplate,
+  Package,
+  FileText,
+  ClipboardList,
+  Image as ImageIcon,
+  Gift,
+  Megaphone,
+  Activity,
+  Search,
+  Shuffle,
+  Menu,
+  Settings,
+  Mail,
+  Users,
+  ScrollText,
+  Circle,
+  Globe,
+  Palette,
+  Tag,
+  Star,
+} from 'lucide-react';
+
+const ICONS: Record<string, ComponentType<SVGProps<SVGSVGElement>>> = {
+  dashboard: LayoutDashboard,
+  inbox: Inbox,
+  kanban: Kanban,
+  building: Building2,
+  chart: ChartBar,
+  layout: LayoutTemplate,
+  package: Package,
+  file: FileText,
+  clipboard: ClipboardList,
+  image: ImageIcon,
+  gift: Gift,
+  megaphone: Megaphone,
+  activity: Activity,
+  search: Search,
+  shuffle: Shuffle,
+  menu: Menu,
+  settings: Settings,
+  mail: Mail,
+  users: Users,
+  history: ScrollText,
+  globe: Globe,
+  palette: Palette,
+  tag: Tag,
+  star: Star,
+};
+
+export function NavIcon({ name, className }: { name: string; className?: string }) {
+  const Icon = ICONS[name] ?? Circle;
+  return <Icon className={className} aria-hidden="true" />;
+}

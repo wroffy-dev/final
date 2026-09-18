@@ -1,0 +1,2493 @@
+// Dropbox Reseller Platform — database schema
+// Money is ALWAYS Decimal. Never Float.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// ENUMS
+// ---------------------------------------------------------------------------
+
+enum ContentStatus {
+  DRAFT
+  PUBLISHED
+  SCHEDULED
+  ARCHIVED
+}
+
+/// Why personal data may be processed. Only CONSENT makes the tick box the
+/// thing that authorises processing; the others are recorded so the CRM can
+/// say "not applicable" honestly instead of showing a missing tick as a gap.
+enum LawfulBasis {
+  CONSENT
+  CONTRACT
+  LEGITIMATE_INTEREST
+  LEGAL_OBLIGATION
+}
+
+/// What a consent event did. Append-only: a withdrawal never edits the row
+/// that recorded the original grant.
+enum ConsentEventType {
+  GRANTED
+  WITHDRAWN
+  REINSTATED
+}
+
+enum ConsentScope {
+  ENQUIRY
+  MARKETING
+  TERMS
+  ALL
+}
+
+/// Whether the stored client IP can be relied on as evidence.
+enum IpStatus {
+  /// Read from a hop the deployment is configured to trust.
+  RECORDED
+  /// No address was available at all (internal call, missing headers).
+  UNAVAILABLE
+  /// A forwarded address arrived from a hop that is not trusted, so it was
+  /// discarded rather than recorded as if it were the visitor's.
+  UNTRUSTED
+  /// Recorded once, then removed by the configured retention period.
+  PURGED
+}
+
+enum SyncMode {
+  ADD_MISSING
+  UPDATE_EXISTING
+}
+
+enum SyncStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+enum LeadStatus {
+  NEW
+  CONTACTED
+  QUALIFIED
+  PROPOSAL
+  NEGOTIATION
+  WON
+  LOST
+  SPAM
+}
+
+enum LeadPriority {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum CustomerStatus {
+  PROSPECT
+  ACTIVE
+  INACTIVE
+  FORMER
+}
+
+enum UserStatus {
+  ACTIVE
+  INVITED
+  SUSPENDED
+}
+
+enum FormFieldType {
+  TEXT
+  EMAIL
+  PHONE
+  NUMBER
+  TEXTAREA
+  SELECT
+  CHECKBOX
+  RADIO
+  HIDDEN
+  COMPANY
+  NAME
+  URL
+  DATE
+  CONSENT
+  MULTISELECT
+  TIME
+}
+
+enum BillingPeriod {
+  MONTHLY
+  ANNUAL
+  BOTH
+  ONE_TIME
+}
+
+enum BackupType {
+  FULL
+  DATABASE
+  MEDIA
+}
+
+enum BackupStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+  DELETING
+  RESTORING
+}
+
+enum BackupStorage {
+  LOCAL
+  S3
+}
+
+/// Why a backup exists. SAFETY backups are taken automatically immediately
+/// before a restore and are exempt from retention pruning, so the rollback
+/// point cannot be deleted by the same cleanup that trims routine backups.
+enum BackupOrigin {
+  MANUAL
+  SCHEDULED
+  SAFETY
+  IMPORTED
+}
+
+enum RedirectType {
+  PERMANENT
+  TEMPORARY
+}
+
+enum ScriptPlacement {
+  HEAD
+  BODY_START
+  BODY_END
+}
+
+enum ScriptEnvironment {
+  ALL
+  PRODUCTION
+  DEVELOPMENT
+}
+
+enum NavigationLocation {
+  HEADER
+  FOOTER
+  FOOTER_SECONDARY
+  LEGAL
+  MOBILE
+  SIDEBAR
+}
+
+enum NavLinkType {
+  INTERNAL
+  EXTERNAL
+  PAGE
+  PRODUCT
+  BLOG_POST
+  BLOG_CATEGORY
+}
+
+enum MediaKind {
+  IMAGE
+  VIDEO
+  DOCUMENT
+  OTHER
+}
+
+enum PopupTrigger {
+  IMMEDIATE
+  DELAY
+  SCROLL
+  EXIT_INTENT
+}
+
+enum PopupType {
+  OFFER
+  IMAGE
+  LEAD_FORM
+  NEWSLETTER
+  PRODUCT
+  LEAD_MAGNET
+}
+
+enum DeviceTarget {
+  ALL
+  DESKTOP
+  MOBILE
+}
+
+enum LeadActivityType {
+  CREATED
+  STATUS_CHANGED
+  ASSIGNED
+  NOTE_ADDED
+  EMAIL_SENT
+  CALL_LOGGED
+  MEETING_LOGGED
+  FOLLOW_UP_SET
+  UPDATED
+  CONVERTED
+}
+
+enum LeadMagnetKind {
+  EBOOK
+  PDF
+  GUIDE
+  CHECKLIST
+  WHITEPAPER
+  DEMO
+  CONSULTATION
+  OFFER
+}
+
+// ---------------------------------------------------------------------------
+// COUNTRIES (multi-market)
+// ---------------------------------------------------------------------------
+
+/// One storefront market.
+///
+/// The market is the axis every piece of localised content hangs off. Exactly
+/// one row carries `isDefault`, and that market is served from the site root
+/// with an empty `slug` — which is what keeps the original single-country URLs
+/// (`/dropbox-business/`) working untouched. Every other market is served from
+/// its own prefix (`/ae/dropbox-business/`).
+///
+/// Nothing in the application hard-codes a market: routing, settings, pricing
+/// and SEO all read these rows, so adding Qatar is a database record plus its
+/// content, never a code change.
+model Country {
+  id   String @id @default(cuid())
+  name String
+  /// ISO 3166-1 alpha-2, upper case. Stable identity used by code and imports.
+  code String @unique
+  /// URL prefix. Empty string for the default market, "ae"/"qa"/... otherwise.
+  slug String @unique
+
+  /// BCP-47 tag used for hreflang and `<html lang>`, e.g. "en-IN".
+  locale         String  @default("en")
+  currency       String  @default("INR")
+  currencySymbol String  @default("₹")
+  phoneCode      String?
+  timezone       String  @default("Asia/Kolkata")
+
+  /// The root market. Exactly one row is true; the save action enforces it.
+  isDefault   Boolean @default(false)
+  /// An inactive market stops resolving publicly — its prefix 404s rather than
+  /// serving a half-built storefront.
+  isActive    Boolean @default(true)
+  /// Published means "ready for search engines": an active but unpublished
+  /// market serves its pages to anyone with the link and stays out of the
+  /// sitemaps. Separate from isActive so a market can be built in the open
+  /// without being indexed, and defaults true so no existing market changes.
+  isPublished Boolean @default(true)
+  sortOrder   Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  settings             CountrySettings?
+  pages                Page[]
+  posts                BlogPost[]
+  navigations          Navigation[]
+  productConfigs       ProductCountry[]
+  variantPricing       ProductVariantCountry[]
+  blogCategories       BlogCategoryCountry[]
+  productCategories    ProductCategoryCountry[]
+  pageCategories       PageCategoryCountry[]
+  brands               BrandCountry[]
+  leads                Lead[]
+  submissions          FormSubmission[]
+  forms                Form[]
+  popups               Popup[]
+  staffAccess          UserCountry[]
+  consentNotices       ConsentNotice[]
+  consentRecords       ConsentRecord[]
+  syncMappingsAsSource CountrySyncMapping[]     @relation("SyncSource")
+  syncMappingsAsTarget CountrySyncMapping[]     @relation("SyncTarget")
+  syncRunsAsSource     CountrySyncRun[]         @relation("SyncRunSource")
+  syncRunsAsTarget     CountrySyncRun[]         @relation("SyncRunTarget")
+
+  @@index([isActive, sortOrder])
+  @@index([isActive, isPublished])
+  @@index([slug])
+}
+
+/// Per-market company identity, contact details and schema data.
+///
+/// Deliberately separate from `WebsiteSettings`, which stays global: the logo,
+/// fonts, colours and layout are one brand across every market, while the
+/// phone number, address, VAT details and organisation schema are not. Every
+/// field is nullable and every reader falls back to the global value, so the
+/// default market renders exactly as it did before this table existed.
+model CountrySettings {
+  id        String @id @default(cuid())
+  countryId String @unique
+
+  /// Company name as shown in this market, when it differs from the site name.
+  companyName    String?
+  legalName      String?
+  salesPhone     String?
+  supportPhone   String?
+  whatsappNumber String?
+  salesEmail     String?
+  supportEmail   String?
+  addressLine1   String?
+  addressLine2   String?
+  city           String?
+  /// State, emirate, province — whatever the market calls it.
+  region         String?
+  postalCode     String?
+  /// Free-text address used where a single line is rendered.
+  address        String? @db.Text
+  businessHours  String?
+  taxLabel       String?
+  taxNumber      String?
+
+  headerCtaLabel    String?
+  headerCtaUrl      String?
+  salesCtaText      String?
+  footerDescription String? @db.Text
+  copyrightText     String?
+
+  // --- Crawler rules for this market ---------------------------------------
+  // Compiled into the single host-root robots.txt, prefixed with the market's
+  // URL prefix. A market does not get its own robots.txt: crawlers only read
+  // the one at the host root, so /ae/robots.txt would be ignored.
+  /// One path per line, relative to this market's prefix.
+  robotsDisallow     String? @db.Text
+  robotsAllow        String? @db.Text
+  /// Sends noindex for every page in this market, through the meta tag and the
+  /// X-Robots-Tag header. Independent of the crawl rules above: blocking a
+  /// crawler stops it seeing the noindex at all.
+  noIndexCountry     Boolean @default(false)
+  /// Keeps the market out of the sitemap index without changing its pages.
+  excludeFromSitemap Boolean @default(false)
+
+  // --- SEO defaults for this market (fall back to the global SEO settings) ---
+  defaultTitle        String?
+  titleTemplate       String?
+  defaultDescription  String? @db.Text
+  defaultOgImageUrl   String?
+  organizationName    String?
+  organizationType    String?
+  organizationLogoUrl String?
+  /// Emitted as LocalBusiness structured data when filled in.
+  localBusinessType   String?
+  latitude            String?
+  longitude           String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  country Country @relation(fields: [countryId], references: [id], onDelete: Cascade)
+}
+
+/// Which markets a staff account may work in.
+///
+/// No rows means "every market", which is what every existing account has, so
+/// nothing changes for a site that never uses the restriction. Country access
+/// only ever narrows what a role already permits — it never grants anything.
+model UserCountry {
+  userId    String
+  countryId String
+
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  country Country @relation(fields: [countryId], references: [id], onDelete: Cascade)
+
+  @@id([userId, countryId])
+  @@index([countryId])
+}
+
+// ---------------------------------------------------------------------------
+// AUTH / STAFF / RBAC
+// ---------------------------------------------------------------------------
+
+enum BlogSurface {
+  /// Sections composing the /blog archive (and category/tag archives).
+  LISTING
+  /// Ordered parts of a single article page.
+  ARTICLE
+  /// Widgets in the article sidebar.
+  SIDEBAR
+}
+
+enum BlogSidebarMode {
+  /// Use the sidebar configured under Blog → Layout.
+  GLOBAL
+  /// Use this post's own widget list.
+  CUSTOM
+  /// No sidebar; the article runs full width.
+  NONE
+}
+
+model User {
+  id            String     @id @default(cuid())
+  email         String     @unique
+  name          String
+  passwordHash  String?
+  image         String?
+  jobTitle      String?
+  phone         String?
+  status        UserStatus @default(ACTIVE)
+  emailVerified DateTime?
+  lastLoginAt   DateTime?
+  createdAt     DateTime   @default(now())
+  updatedAt     DateTime   @updatedAt
+  deletedAt     DateTime?
+
+  // --- Profile (self-service; none of these confer privilege) ---
+  department     String?
+  timezone       String?
+  addressLine1   String?
+  addressLine2   String?
+  city           String?
+  state          String?
+  country        String?
+  postalCode     String?
+  alternatePhone String?
+  bio            String? @db.Text
+
+  /// Public author profile links, surfaced by the blog author box.
+  linkedinUrl String?
+  twitterUrl  String?
+  websiteUrl  String?
+
+  // --- Security ---
+  /// Two-factor is mandatory for every role. The column exists so a future
+  /// break-glass procedure has somewhere to record an exemption deliberately;
+  /// nothing in the application ever sets it to false.
+  twoFactorRequired   Boolean   @default(true)
+  twoFactorEnabled    Boolean   @default(false)
+  /// AES-256-GCM ciphertext, never the raw TOTP secret.
+  twoFactorSecret     String?
+  /// Enrollment secret, held only until the first valid code proves it works.
+  twoFactorPending    String?
+  twoFactorVerifiedAt DateTime?
+  twoFactorLastUsedAt DateTime?
+  /// Highest TOTP time step already accepted, so a code cannot be replayed
+  /// inside its own 30-second window.
+  twoFactorLastStep   BigInt?
+  passwordChangedAt   DateTime?
+
+  roles  UserRole @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  roleId String
+
+  accounts Account[]
+  sessions Session[]
+
+  assignedLeads     Lead[]           @relation("LeadAssignee")
+  assignedCustomers Customer[]       @relation("CustomerAssignee")
+  leadNotes         LeadNote[]
+  leadActivities    LeadActivity[]
+  customerNotes     CustomerNote[]
+  authoredPosts     BlogPost[]       @relation("PostAuthor")
+  uploadedMedia     Media[]          @relation("MediaUploader")
+  auditLogs         AuditLog[]
+  backups           Backup[]         @relation("BackupCreator")
+  authSessions      AuthSession[]
+  recoveryCodes     RecoveryCode[]
+  /// Markets this account may work in. No rows means every market.
+  countries         UserCountry[]
+  consentNotices    ConsentNotice[]  @relation("ConsentNoticeAuthor")
+  consentEvents     ConsentEvent[]   @relation("ConsentEventActor")
+  syncRuns          CountrySyncRun[] @relation("SyncRunActor")
+
+  @@index([email])
+  @@index([roleId])
+  @@index([status])
+}
+
+model UserRole {
+  id          String  @id @default(cuid())
+  name        String  @unique
+  slug        String  @unique
+  description String?
+  isSystem    Boolean @default(false)
+  // Rank governs who may manage whom. Lower rank == more privileged.
+  rank        Int     @default(100)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  users       User[]
+  permissions RolePermission[]
+
+  @@index([slug])
+}
+
+model Permission {
+  id          String  @id @default(cuid())
+  key         String  @unique // e.g. "pages.edit"
+  group       String // e.g. "pages"
+  label       String
+  description String?
+
+  roles RolePermission[]
+
+  @@index([group])
+}
+
+model RolePermission {
+  roleId       String
+  permissionId String
+
+  role       UserRole   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
+
+  @@id([roleId, permissionId])
+  @@index([permissionId])
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+/// One sign-in, tracked server-side.
+///
+/// Auth.js runs on a JWT strategy, which on its own cannot be revoked: a
+/// stolen or stale token stays valid until it expires. Every token therefore
+/// carries only the id of a row here, and the row is what actually confers
+/// access. That makes three things possible that a bare JWT cannot do —
+/// revoking a session the moment a password changes, holding a session at
+/// "password accepted, second factor still outstanding", and showing the user
+/// the devices signed into their account.
+model AuthSession {
+  id     String @id @default(cuid())
+  userId String
+
+  /// Null until the TOTP challenge is answered. Until then the session grants
+  /// nothing beyond the enrollment and verification screens.
+  mfaVerifiedAt DateTime?
+  /// How the second factor was satisfied: TOTP, RECOVERY_CODE or SETUP.
+  mfaMethod     String?
+
+  createdAt     DateTime  @default(now())
+  lastSeenAt    DateTime  @default(now())
+  expiresAt     DateTime
+  revokedAt     DateTime?
+  /// Why the session ended, for the Activity tab: PASSWORD_CHANGED,
+  /// MFA_RESET, SIGNED_OUT, REVOKED_BY_USER, REVOKED_BY_ADMIN.
+  revokedReason String?
+
+  /// Salted hash, never the address itself.
+  ipHash    String?
+  userAgent String? @db.Text
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+/// A single-use backup code for when the authenticator app is unavailable.
+///
+/// Stored as an HMAC keyed with the server-side MFA key rather than a bare
+/// digest, so a leaked database alone cannot be brute-forced offline. One row
+/// per code — not a JSON blob — so consuming one is a single indexed update
+/// that cannot race with a second attempt.
+model RecoveryCode {
+  id       String @id @default(cuid())
+  userId   String
+  codeHash String @unique
+
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+}
+
+// ---------------------------------------------------------------------------
+// CMS — PAGES & SECTIONS
+// ---------------------------------------------------------------------------
+
+/// Nested taxonomy for pages, e.g. Solutions → Cloud Solutions.
+/// Deleting a category never deletes its pages: the relation is SetNull, so
+/// they simply become uncategorised.
+model PageCategory {
+  id          String  @id @default(cuid())
+  name        String
+  slug        String  @unique
+  description String? @db.Text
+  parentId    String?
+  sortOrder   Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  parent    PageCategory?         @relation("PageCategoryTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children  PageCategory[]        @relation("PageCategoryTree")
+  pages     Page[]
+  countries PageCategoryCountry[]
+
+  @@index([slug])
+  @@index([parentId])
+}
+
+model Page {
+  id          String        @id @default(cuid())
+  /// The market this page belongs to. Unique per market, not globally, so
+  /// India and the UAE can each own a "dropbox-business" page.
+  countryId   String
+  title       String
+  slug        String // "" is the homepage; nested allowed: "dropbox/business"
+  status      ContentStatus @default(DRAFT)
+  publishedAt DateTime?
+  isHomepage  Boolean       @default(false)
+
+  // Optional taxonomy. Nullable so every existing page stays valid.
+  categoryId String?
+
+  // Layout controls
+  showHeader Boolean @default(true)
+  showFooter Boolean @default(true)
+
+  // SEO (entity overrides global defaults)
+  seoTitle           String?
+  seoDescription     String? @db.Text
+  canonicalUrl       String?
+  noIndex            Boolean @default(false)
+  noFollow           Boolean @default(false)
+  ogTitle            String?
+  ogDescription      String? @db.Text
+  ogImageId          String?
+  twitterTitle       String?
+  twitterDescription String? @db.Text
+  twitterImageId     String?
+
+  createdById String?
+  updatedById String?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  country         Country           @relation(fields: [countryId], references: [id], onDelete: Restrict)
+  category        PageCategory?     @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  ogImage         Media?            @relation("PageOgImage", fields: [ogImageId], references: [id], onDelete: SetNull)
+  twitterImage    Media?            @relation("PageTwitterImage", fields: [twitterImageId], references: [id], onDelete: SetNull)
+  sections        PageSection[]
+  leads           Lead[]            @relation("LeadLandingPage")
+  popups          PopupPageTarget[]
+  navigationItems NavigationItem[]
+
+  @@unique([countryId, slug])
+  @@index([slug])
+  @@index([countryId])
+  @@index([countryId, status, publishedAt])
+  @@index([categoryId])
+  @@index([status, publishedAt])
+  @@index([deletedAt])
+}
+
+model PageSection {
+  id        String  @id @default(cuid())
+  pageId    String
+  blockType String // registry key: "hero", "featureGrid", ...
+  name      String? // admin-facing label
+  sortOrder Int     @default(0)
+  isVisible Boolean @default(true)
+
+  // Block payload validated by the block registry's Zod schema
+  content  Json @default("{}")
+  // Presentation settings: background, spacing, width, alignment...
+  settings Json @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  page Page @relation(fields: [pageId], references: [id], onDelete: Cascade)
+
+  @@index([pageId, sortOrder])
+}
+
+// ---------------------------------------------------------------------------
+// PRODUCTS
+// ---------------------------------------------------------------------------
+
+model ProductCategory {
+  id          String  @id @default(cuid())
+  name        String
+  slug        String  @unique
+  description String? @db.Text
+  sortOrder   Int     @default(0)
+  imageId     String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  image     Media?                   @relation("CategoryImage", fields: [imageId], references: [id], onDelete: SetNull)
+  products  Product[]
+  countries ProductCategoryCountry[]
+
+  @@index([slug])
+}
+
+/// Which markets offer a product category.
+///
+/// The category itself is one global row — "Cloud storage" means the same
+/// thing everywhere, and duplicating it per market would give five rows that
+/// have to be renamed five times. What is per-market is whether a market
+/// *offers* it, which is this table.
+///
+/// It exists so that removing a category from one storefront removes one row
+/// here instead of the taxonomy everybody shares. Follows the shape
+/// `BlogCategoryCountry` already established.
+model ProductCategoryCountry {
+  id         String @id @default(cuid())
+  categoryId String
+  countryId  String
+
+  /// Hidden in this market without giving up its place. Removing the market's
+  /// offer deletes this row; hiding it sets this false.
+  isActive  Boolean @default(true)
+  sortOrder Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  category ProductCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  country  Country         @relation(fields: [countryId], references: [id], onDelete: Cascade)
+
+  @@unique([categoryId, countryId])
+  @@index([countryId, isActive])
+}
+
+/// Which markets offer a page category. See `ProductCategoryCountry`.
+model PageCategoryCountry {
+  id         String @id @default(cuid())
+  categoryId String
+  countryId  String
+
+  isActive  Boolean @default(true)
+  sortOrder Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  category PageCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  country  Country      @relation(fields: [countryId], references: [id], onDelete: Cascade)
+
+  @@unique([categoryId, countryId])
+  @@index([countryId, isActive])
+}
+
+/// Which markets carry a brand. See `ProductCategoryCountry`.
+///
+/// A brand is one identity — Dropbox is Dropbox — so the record is shared and
+/// this table says who sells it.
+model BrandCountry {
+  id        String @id @default(cuid())
+  brandId   String
+  countryId String
+
+  isActive  Boolean @default(true)
+  sortOrder Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  brand   Brand   @relation(fields: [brandId], references: [id], onDelete: Cascade)
+  country Country @relation(fields: [countryId], references: [id], onDelete: Cascade)
+
+  @@unique([brandId, countryId])
+  @@index([countryId, isActive])
+}
+
+model Brand {
+  id          String  @id @default(cuid())
+  name        String
+  slug        String  @unique
+  description String? @db.Text
+  websiteUrl  String?
+  sortOrder   Int     @default(0)
+  logoId      String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  logo      Media?         @relation("BrandLogo", fields: [logoId], references: [id], onDelete: SetNull)
+  products  Product[]
+  countries BrandCountry[]
+
+  @@index([slug])
+  @@index([sortOrder])
+}
+
+model Product {
+  id            String        @id @default(cuid())
+  name          String
+  slug          String        @unique
+  sku           String?       @unique
+  status        ContentStatus @default(DRAFT)
+  publishedAt   DateTime?
+  isFeatured    Boolean       @default(false)
+  sortOrder     Int           @default(0)
+  // Independent ordering for the featured rail — a product can sit third in the
+  // catalogue and first among the featured picks.
+  featuredOrder Int           @default(0)
+
+  shortDescription String? @db.Text
+  description      String? @db.Text
+
+  // Spec
+  storage       String? // "3 TB", "Unlimited"
+  minUsers      Int?
+  maxUsers      Int?
+  billingPeriod BillingPeriod @default(BOTH)
+
+  // Money — Decimal only.
+  currency        String   @default("INR")
+  monthlyPrice    Decimal? @db.Decimal(12, 2)
+  annualPrice     Decimal? @db.Decimal(12, 2)
+  compareAtPrice  Decimal? @db.Decimal(12, 2)
+  discountPercent Int?
+  priceSuffix     String? // "per user / month"
+  priceNote       String?
+
+  // Structured content
+  features Json @default("[]") // string[]
+  benefits Json @default("[]") // string[]
+  specs    Json @default("[]") // { label, value }[]
+
+  // CTA
+  ctaLabel   String? @default("Get Started")
+  ctaUrl     String?
+  ctaFormId  String?
+  ctaPopupId String?
+
+  imageId    String?
+  galleryIds Json    @default("[]") // string[] of Media ids
+
+  categoryId String?
+  brandId    String?
+
+  // SEO
+  seoTitle       String?
+  seoDescription String? @db.Text
+  canonicalUrl   String?
+  noIndex        Boolean @default(false)
+  ogImageId      String?
+
+  createdById String?
+  updatedById String?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  category         ProductCategory?  @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  brand            Brand?            @relation(fields: [brandId], references: [id], onDelete: SetNull)
+  image            Media?            @relation("ProductImage", fields: [imageId], references: [id], onDelete: SetNull)
+  ogImage          Media?            @relation("ProductOgImage", fields: [ogImageId], references: [id], onDelete: SetNull)
+  ctaForm          Form?             @relation("ProductCtaForm", fields: [ctaFormId], references: [id], onDelete: SetNull)
+  variants         ProductVariant[]
+  /// Per-market availability, pricing, copy and SEO. The row above stays the
+  /// single global master for the product's identity and shared specification.
+  countries        ProductCountry[]
+  leads            Lead[]            @relation("LeadProduct")
+  forms            Form[]            @relation("FormProduct")
+  customerProducts CustomerProduct[]
+  navigationItems  NavigationItem[]
+
+  @@index([slug])
+  @@index([status, publishedAt])
+  @@index([categoryId])
+  @@index([brandId])
+  @@index([isFeatured, featuredOrder])
+  @@index([sortOrder])
+  @@index([deletedAt])
+}
+
+model ProductVariant {
+  id           String   @id @default(cuid())
+  productId    String
+  name         String
+  sku          String?
+  storage      String?
+  users        Int?
+  monthlyPrice Decimal? @db.Decimal(12, 2)
+  annualPrice  Decimal? @db.Decimal(12, 2)
+  sortOrder    Int      @default(0)
+  isDefault    Boolean  @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  product   Product                 @relation(fields: [productId], references: [id], onDelete: Cascade)
+  countries ProductVariantCountry[]
+
+  @@index([productId, sortOrder])
+}
+
+/// One product as sold in one market.
+///
+/// The `Product` row stays the global master — name, SKU, brand, category,
+/// shared specification and imagery — because "Dropbox Business" is the same
+/// product everywhere. Everything that is genuinely local lives here: whether
+/// it is on sale at all, what it costs, in which currency, the local copy, the
+/// call to action and the market's own SEO.
+///
+/// Prices are always Decimal and always entered by an administrator. Nothing
+/// converts currency at render time: an exchange-rate-derived price would
+/// change under the visitor's feet and can never be quoted reliably.
+model ProductCountry {
+  id        String @id @default(cuid())
+  productId String
+  countryId String
+
+  status        ContentStatus @default(DRAFT)
+  publishedAt   DateTime?
+  isFeatured    Boolean       @default(false)
+  sortOrder     Int           @default(0)
+  featuredOrder Int           @default(0)
+
+  // Money — Decimal only.
+  currency        String   @default("INR")
+  monthlyPrice    Decimal? @db.Decimal(12, 2)
+  annualPrice     Decimal? @db.Decimal(12, 2)
+  compareAtPrice  Decimal? @db.Decimal(12, 2)
+  discountPercent Int?
+  priceSuffix     String?
+  priceNote       String?
+
+  shortDescription String? @db.Text
+  description      String? @db.Text
+
+  ctaLabel  String?
+  ctaUrl    String?
+  ctaFormId String?
+
+  seoTitle       String?
+  seoDescription String? @db.Text
+  canonicalUrl   String?
+  noIndex        Boolean @default(false)
+  ogImageId      String?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  /// Removed from **this market only**. The product itself and every other
+  /// market's configuration are untouched, and this market's prices, ordering
+  /// and SEO are kept rather than destroyed — a country-scoped delete is a
+  /// withdrawal from one storefront, not a deletion of the product.
+  deletedAt DateTime?
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  country Country @relation(fields: [countryId], references: [id], onDelete: Cascade)
+  ctaForm Form?   @relation("ProductCountryCtaForm", fields: [ctaFormId], references: [id], onDelete: SetNull)
+  ogImage Media?  @relation("ProductCountryOgImage", fields: [ogImageId], references: [id], onDelete: SetNull)
+
+  @@unique([productId, countryId])
+  @@index([countryId, status, publishedAt])
+  @@index([countryId, sortOrder])
+  @@index([countryId, isFeatured, featuredOrder])
+  /// Every country-scoped catalogue read filters on both columns — the admin
+  /// list, the pickers, the sitemap and the market switcher all ask "what does
+  /// this market still offer".
+  @@index([countryId, deletedAt])
+  @@index([productId])
+}
+
+/// A variant's price in one market.
+///
+/// Variants carry a global price for the default market; a row here overrides
+/// it where a market prices its tiers differently. Absent rows simply mean the
+/// variant is sold at its global price, so nothing had to be created during
+/// the migration.
+model ProductVariantCountry {
+  id        String @id @default(cuid())
+  variantId String
+  countryId String
+
+  currency     String?
+  monthlyPrice Decimal? @db.Decimal(12, 2)
+  annualPrice  Decimal? @db.Decimal(12, 2)
+  isAvailable  Boolean  @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  variant ProductVariant @relation(fields: [variantId], references: [id], onDelete: Cascade)
+  country Country        @relation(fields: [countryId], references: [id], onDelete: Cascade)
+
+  @@unique([variantId, countryId])
+  @@index([countryId])
+}
+
+/// Per-market archive copy and SEO for a globally shared blog category.
+///
+/// Categories are not duplicated per market — the taxonomy is one tree — but a
+/// market can give an archive its own heading, description, canonical and
+/// robots directives. Nothing here is required; an absent row means the
+/// category renders with its global values, exactly as it always has.
+model BlogCategoryCountry {
+  id         String @id @default(cuid())
+  categoryId String
+  countryId  String
+
+  archiveTitle       String?
+  archiveDescription String? @db.Text
+  seoTitle           String?
+  seoDescription     String? @db.Text
+  canonicalUrl       String?
+  ogTitle            String?
+  ogDescription      String? @db.Text
+  noIndex            Boolean @default(false)
+  noFollow           Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  category BlogCategory @relation(fields: [categoryId], references: [id], onDelete: Cascade)
+  country  Country      @relation(fields: [countryId], references: [id], onDelete: Cascade)
+
+  @@unique([categoryId, countryId])
+  @@index([countryId])
+}
+
+// ---------------------------------------------------------------------------
+// BLOG
+// ---------------------------------------------------------------------------
+
+model BlogCategory {
+  id          String  @id @default(cuid())
+  name        String
+  slug        String  @unique
+  description String? @db.Text
+  sortOrder   Int     @default(0)
+
+  /// Optional parent, e.g. Microsoft → Azure. Nullable so every existing
+  /// category stays a valid top-level one and current URLs keep working.
+  parentId String?
+
+  /// Hidden categories keep their posts and URLs but drop out of the
+  /// category filter. Defaults to true so every existing category stays live.
+  isActive Boolean @default(true)
+
+  imageId       String?
+  bannerImageId String?
+
+  archiveTitle       String?
+  archiveDescription String? @db.Text
+
+  seoTitle       String?
+  seoDescription String? @db.Text
+  canonicalUrl   String?
+  ogTitle        String?
+  ogDescription  String? @db.Text
+  ogImageId      String?
+  noIndex        Boolean @default(false)
+  noFollow       Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  image       Media? @relation("BlogCategoryImage", fields: [imageId], references: [id], onDelete: SetNull)
+  bannerImage Media? @relation("BlogCategoryBanner", fields: [bannerImageId], references: [id], onDelete: SetNull)
+  ogImage     Media? @relation("BlogCategoryOgImage", fields: [ogImageId], references: [id], onDelete: SetNull)
+
+  parent    BlogCategory?         @relation("BlogCategoryTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children  BlogCategory[]        @relation("BlogCategoryTree")
+  posts     BlogPost[]
+  navItems  NavigationItem[]
+  /// Per-market archive copy and SEO. The category itself stays global.
+  countries BlogCategoryCountry[]
+
+  @@index([slug])
+  @@index([parentId])
+}
+
+model BlogTag {
+  id          String  @id @default(cuid())
+  name        String
+  slug        String  @unique
+  description String? @db.Text
+  /// Hidden tags keep their posts; they simply stop being offered publicly.
+  isActive    Boolean @default(true)
+  sortOrder   Int     @default(0)
+
+  seoTitle       String?
+  seoDescription String? @db.Text
+  canonicalUrl   String?
+  noIndex        Boolean @default(false)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime? @updatedAt
+
+  posts BlogPostTag[]
+
+  @@index([slug])
+}
+
+model BlogPost {
+  id               String        @id @default(cuid())
+  /// The market this article belongs to. The same slug may exist once per
+  /// market, so /blog/x and /ae/blog/x are two independent articles.
+  countryId        String
+  title            String
+  slug             String
+  subtitle         String?
+  status           ContentStatus @default(DRAFT)
+  publishedAt      DateTime?
+  excerpt          String?       @db.Text
+  content          String        @default("") @db.Text
+  readingTime      Int           @default(1) // minutes
+  isFeatured       Boolean       @default(false)
+  /// Lower sorts first among featured posts. Only read when isFeatured.
+  featuredPriority Int           @default(0)
+  /// Counter behind the "Popular posts" sources. Never used for anything else.
+  viewCount        Int           @default(0)
+
+  featuredImageId String?
+  thumbnailId     String?
+  categoryId      String?
+  authorId        String?
+
+  /// Per-post overrides for the parts of the article page an admin can toggle
+  /// (breadcrumb, author box, share, TOC, related, forms...). Empty means
+  /// "inherit everything from Blog → Design", which is what every existing
+  /// post does.
+  options Json @default("{}")
+
+  /// Which sidebar this post renders: the global one, its own widget list, or
+  /// none at all.
+  sidebarMode BlogSidebarMode @default(GLOBAL)
+
+  seoTitle       String?
+  seoDescription String? @db.Text
+  focusKeyword   String?
+  canonicalUrl   String?
+  noIndex        Boolean @default(false)
+  noFollow       Boolean @default(false)
+  ogTitle        String?
+  ogDescription  String? @db.Text
+  ogImageId      String?
+  twitterImageId String?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  featuredImage Media?        @relation("PostFeaturedImage", fields: [featuredImageId], references: [id], onDelete: SetNull)
+  thumbnail     Media?        @relation("PostThumbnail", fields: [thumbnailId], references: [id], onDelete: SetNull)
+  ogImage       Media?        @relation("PostOgImage", fields: [ogImageId], references: [id], onDelete: SetNull)
+  twitterImage  Media?        @relation("PostTwitterImage", fields: [twitterImageId], references: [id], onDelete: SetNull)
+  country       Country       @relation(fields: [countryId], references: [id], onDelete: Restrict)
+  category      BlogCategory? @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  author        User?         @relation("PostAuthor", fields: [authorId], references: [id], onDelete: SetNull)
+  tags          BlogPostTag[]
+
+  relatedTo   BlogPostRelation[] @relation("RelationSource")
+  relatedFrom BlogPostRelation[] @relation("RelationTarget")
+  navItems    NavigationItem[]
+  sections    BlogSection[]
+  leads       Lead[]             @relation("LeadBlogPost")
+
+  @@unique([countryId, slug])
+  @@index([slug])
+  @@index([countryId])
+  @@index([countryId, status, publishedAt])
+  @@index([status, publishedAt])
+  @@index([categoryId])
+  @@index([deletedAt])
+  @@index([isFeatured, featuredPriority])
+}
+
+/// One reorderable part of a blog surface.
+///
+/// Deliberately the same shape as `PageSection` — a block-registry key, a
+/// validated `content` payload and a universal `settings` design record — so
+/// the blog reuses the page builder's registry, design panel and renderer
+/// rather than growing a second one. `postId` is null for the global sets and
+/// set only for a post that overrides its own sidebar.
+model BlogSection {
+  id        String      @id @default(cuid())
+  surface   BlogSurface
+  postId    String?
+  blockType String
+  name      String?
+  sortOrder Int         @default(0)
+  isVisible Boolean     @default(true)
+
+  content  Json @default("{}")
+  settings Json @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  post BlogPost? @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([surface, postId, sortOrder])
+  @@index([postId])
+}
+
+/// Blog-wide design, layout and archive SEO (singleton).
+///
+/// Presentation groups are stored as validated JSON rather than as columns so
+/// the controls can grow without a migration per control — the same approach
+/// `PageSection.settings` and `Form.design` already use.
+model BlogSettings {
+  id String @id @default("singleton")
+
+  postsPerPage Int @default(9)
+
+  /// Card appearance and per-item visibility for every blog grid.
+  cardSettings   Json @default("{}")
+  /// Article/sidebar widths, gaps, sticky behaviour and colour overrides.
+  layoutSettings Json @default("{}")
+  /// Social sharing: master switch, per-network switches, placement.
+  shareSettings  Json @default("{}")
+  /// Blog-specific typography overrides layered on the global font settings.
+  typography     Json @default("{}")
+
+  // Archive SEO — overrides the global defaults for /blog.
+  seoTitle       String?
+  seoDescription String? @db.Text
+  canonicalUrl   String?
+  ogTitle        String?
+  ogDescription  String? @db.Text
+  ogImageId      String?
+  noIndex        Boolean @default(false)
+  noFollow       Boolean @default(false)
+
+  updatedAt DateTime @updatedAt
+
+  ogImage Media? @relation("BlogSettingsOgImage", fields: [ogImageId], references: [id], onDelete: SetNull)
+}
+
+model BlogPostTag {
+  postId String
+  tagId  String
+
+  post BlogPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  tag  BlogTag  @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([postId, tagId])
+  @@index([tagId])
+}
+
+model BlogPostRelation {
+  sourceId  String
+  targetId  String
+  sortOrder Int    @default(0)
+
+  source BlogPost @relation("RelationSource", fields: [sourceId], references: [id], onDelete: Cascade)
+  target BlogPost @relation("RelationTarget", fields: [targetId], references: [id], onDelete: Cascade)
+
+  @@id([sourceId, targetId])
+  @@index([targetId])
+}
+
+// ---------------------------------------------------------------------------
+// MEDIA
+// ---------------------------------------------------------------------------
+
+/// User-facing media folders, nested without limit. Separate from the
+/// storage key's YYYY/MM prefix, which stays exactly as it is so existing
+/// media URLs never change.
+model MediaFolder {
+  id       String  @id @default(cuid())
+  name     String
+  parentId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  parent   MediaFolder?  @relation("MediaFolderTree", fields: [parentId], references: [id], onDelete: SetNull)
+  children MediaFolder[] @relation("MediaFolderTree")
+  media    Media[]
+
+  @@index([parentId])
+}
+
+model Media {
+  id          String    @id @default(cuid())
+  filename    String
+  storageKey  String    @unique
+  url         String    @db.Text
+  provider    String    @default("local") // local | s3 | r2
+  mimeType    String
+  kind        MediaKind @default(IMAGE)
+  size        Int
+  width       Int?
+  height      Int?
+  altText     String?
+  title       String?
+  caption     String?   @db.Text
+  description String?   @db.Text
+  /// Legacy free-text label, kept so nothing that reads it breaks.
+  folder      String?
+  /// The folder this item lives in. Null means Uncategorised.
+  folderId    String?
+
+  uploadedById String?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  uploadedBy  User?        @relation("MediaUploader", fields: [uploadedById], references: [id], onDelete: SetNull)
+  mediaFolder MediaFolder? @relation(fields: [folderId], references: [id], onDelete: SetNull)
+
+  pageOgImages           Page[]            @relation("PageOgImage")
+  pageTwitterImages      Page[]            @relation("PageTwitterImage")
+  productImages          Product[]         @relation("ProductImage")
+  productOgImages        Product[]         @relation("ProductOgImage")
+  categoryImages         ProductCategory[] @relation("CategoryImage")
+  brandLogos             Brand[]           @relation("BrandLogo")
+  postFeaturedImages     BlogPost[]        @relation("PostFeaturedImage")
+  postThumbnails         BlogPost[]        @relation("PostThumbnail")
+  postOgImages           BlogPost[]        @relation("PostOgImage")
+  postTwitterImages      BlogPost[]        @relation("PostTwitterImage")
+  blogCategoryImages     BlogCategory[]    @relation("BlogCategoryImage")
+  blogCategoryBanners    BlogCategory[]    @relation("BlogCategoryBanner")
+  blogCategoryOgImages   BlogCategory[]    @relation("BlogCategoryOgImage")
+  blogSettingsOgImages   BlogSettings[]    @relation("BlogSettingsOgImage")
+  leadMagnetImages       LeadMagnet[]      @relation("LeadMagnetImage")
+  leadMagnetFiles        LeadMagnet[]      @relation("LeadMagnetFile")
+  popupImages            Popup[]           @relation("PopupImage")
+  productCountryOgImages ProductCountry[]  @relation("ProductCountryOgImage")
+
+  @@index([kind])
+  @@index([createdAt])
+  @@index([deletedAt])
+  @@index([folderId])
+}
+
+// ---------------------------------------------------------------------------
+// FORMS
+// ---------------------------------------------------------------------------
+
+model Form {
+  id          String  @id @default(cuid())
+  name        String
+  /// Unique per market, not globally, so India and the UAE can each own a
+  /// "contact" form and neither has to be called "contact-ae". Two forms shared
+  /// by every market (countryId null) may not share a slug either — SQL treats
+  /// NULLs as distinct, so that one case is enforced by `saveForm` instead.
+  slug        String
+  /// Null means the form is shared by every market, which is what every form
+  /// built before markets existed is. Setting it restricts the form to one.
+  countryId   String?
+  description String? @db.Text
+  isActive    Boolean @default(true)
+
+  submitLabel    String  @default("Submit")
+  successMessage String  @default("Thank you. Our team will contact you shortly.")
+  redirectUrl    String?
+
+  // Lead defaults applied to submissions
+  leadSource       String? @default("Website Form")
+  defaultProductId String?
+  createsLead      Boolean @default(true)
+
+  notifyEmails String? @db.Text // comma-separated
+  /// Legacy free-text line under the submit button. Still rendered when no
+  /// consent notice applies, so forms built before consent existed are
+  /// unchanged.
+  consentText  String? @db.Text
+
+  // --- Consent ---------------------------------------------------------------
+  /// Which notice version family this form shows. Null uses the site default.
+  consentNoticeKey       String?
+  /// What authorises processing this form's submissions. CONSENT makes the
+  /// enquiry tick box mandatory server-side; the others record the basis and
+  /// let the CRM show "Not applicable" rather than an apparent gap.
+  lawfulBasis            LawfulBasis @default(CONSENT)
+  /// Offer marketing consent inside the tick box. Never required to submit,
+  /// and only possible when the box is optional and the live notice actually
+  /// has marketing wording. Off by default: marketing is opted into.
+  offerMarketingConsent  Boolean     @default(false)
+  /// Ask for Terms acceptance as its own tick box.
+  requireTermsAcceptance Boolean     @default(false)
+  /// Turns the consent block off for a form that genuinely collects nothing
+  /// personal. Defaults true: every existing form collects an email.
+  collectsPersonalData   Boolean     @default(true)
+  /// The wording beside this form's single combined tick box. Null composes
+  /// one from the purposes the box actually covers, which is what every form
+  /// built before the combined box does.
+  consentCombinedLabel   String?     @db.Text
+
+  // Spam protection. Defaults to false so every form published before this
+  // existed keeps submitting exactly as it did.
+  requireCaptcha Boolean @default(false)
+
+  /// Presentation for this form, everywhere it is rendered — the FormDesign
+  /// schema in src/lib/forms/form-design.ts. Null means "use the defaults",
+  /// which is exactly how every form looked before these controls existed, so
+  /// nothing shifts under a form nobody has restyled.
+  design Json?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  country        Country?         @relation(fields: [countryId], references: [id], onDelete: SetNull)
+  defaultProduct Product?         @relation("FormProduct", fields: [defaultProductId], references: [id], onDelete: SetNull)
+  fields         FormField[]
+  submissions    FormSubmission[]
+  leads          Lead[]           @relation("LeadForm")
+  productCtas    Product[]        @relation("ProductCtaForm")
+  countryCtas    ProductCountry[] @relation("ProductCountryCtaForm")
+  popups         Popup[]          @relation("PopupForm")
+  leadMagnets    LeadMagnet[]     @relation("LeadMagnetForm")
+
+  @@unique([countryId, slug])
+  @@index([slug])
+  @@index([countryId])
+}
+
+model FormField {
+  id           String        @id @default(cuid())
+  formId       String
+  type         FormFieldType
+  label        String
+  name         String // machine key
+  placeholder  String?
+  helpText     String?
+  defaultValue String?
+  isRequired   Boolean       @default(false)
+  sortOrder    Int           @default(0)
+  width        String        @default("full") // full | half
+  options      Json          @default("[]") // { label, value }[]
+  // Validation
+  minLength    Int?
+  maxLength    Int?
+  pattern      String?
+
+  /// Presentation and state. Every default reproduces the behaviour a field
+  /// had before these columns existed: labels shown, field enabled, visible
+  /// and editable.
+  showLabel  Boolean @default(true)
+  isEnabled  Boolean @default(true)
+  isHidden   Boolean @default(false)
+  isReadOnly Boolean @default(false)
+  /// Grid columns this field spans. Null falls back to `width`, so a form
+  /// saved before the column system keeps its half/full layout.
+  colSpan    Int?
+  /// Extra class names appended to the field wrapper. Sanitised on save to a
+  /// plain token list, so nothing here can close an attribute or inject CSS.
+  cssClass   String?
+
+  /// The long tail: numeric bounds, textarea rows, per-field error messages,
+  /// choice layout and conditional visibility. JSON rather than twenty more
+  /// nullable columns, because none of it is ever queried — it is read only
+  /// when the field is rendered or validated.
+  settings Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  form Form @relation(fields: [formId], references: [id], onDelete: Cascade)
+
+  @@unique([formId, name])
+  @@index([formId, sortOrder])
+}
+
+model FormSubmission {
+  id        String  @id @default(cuid())
+  formId    String
+  /// Which storefront produced this submission.
+  countryId String?
+  data      Json    @default("{}")
+
+  ipHash    String?
+  ipAddress String?
+  ipStatus  IpStatus @default(UNAVAILABLE)
+  userAgent String?  @db.Text
+  referrer  String?  @db.Text
+  pageUrl   String?  @db.Text
+
+  /// The form's name and the field labels as they were when this was
+  /// submitted. A later rename must not change what this submission says it
+  /// asked.
+  formName    String?
+  fieldLabels Json    @default("{}")
+
+  leadId String?
+
+  createdAt DateTime @default(now())
+
+  form    Form           @relation(fields: [formId], references: [id], onDelete: Cascade)
+  lead    Lead?          @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  country Country?       @relation(fields: [countryId], references: [id], onDelete: SetNull)
+  consent ConsentRecord?
+
+  @@index([formId, createdAt])
+  @@index([leadId])
+  @@index([countryId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// CRM — LEADS
+// ---------------------------------------------------------------------------
+
+model Lead {
+  id        String @id @default(cuid())
+  reference Int    @default(autoincrement())
+
+  /// The storefront that generated this lead. Backfilled to the default market
+  /// for every lead captured before markets existed.
+  countryId String
+
+  name     String
+  email    String
+  phone    String?
+  company  String?
+  jobTitle String?
+  message  String? @db.Text
+
+  status        LeadStatus   @default(NEW)
+  priority      LeadPriority @default(MEDIUM)
+  pipelineOrder Int          @default(0)
+
+  source      String?
+  campaign    String?
+  ctaLabel    String?
+  ctaLocation String?
+
+  // Attribution — first & last touch
+  utmSource   String?
+  utmMedium   String?
+  utmCampaign String?
+  utmTerm     String?
+  utmContent  String?
+
+  firstUtmSource   String?
+  firstUtmMedium   String?
+  firstUtmCampaign String?
+  firstUtmTerm     String?
+  firstUtmContent  String?
+  firstLandingUrl  String?   @db.Text
+  firstTouchAt     DateTime?
+
+  referrer              String?   @db.Text
+  landingUrl            String?   @db.Text
+  userAgent             String?   @db.Text
+  ipHash                String?
+  /// The address itself, for the evidence trail. Readable only with the
+  /// leads.viewIp permission and cleared by the configured retention period,
+  /// which is why ipStatus exists beside it: a null could mean "never had
+  /// one", "arrived from an untrusted hop", or "retained period elapsed", and
+  /// those are different facts.
+  ipAddress             String?
+  ipStatus              IpStatus  @default(UNAVAILABLE)
+  /// Set when marketing consent is withdrawn, so consent-based marketing can
+  /// be suppressed without editing the original consent record.
+  marketingSuppressedAt DateTime?
+
+  productId     String?
+  landingPageId String?
+  /// Set when the lead was captured on a blog article, so the article that
+  /// converted them is recorded alongside the page attribution.
+  blogPostId    String?
+  formId        String?
+  leadMagnetId  String?
+  assignedToId  String?
+  customerId    String?
+
+  followUpAt DateTime?
+  lostReason String?   @db.Text
+  value      Decimal?  @db.Decimal(12, 2)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  country     Country     @relation(fields: [countryId], references: [id], onDelete: Restrict)
+  product     Product?    @relation("LeadProduct", fields: [productId], references: [id], onDelete: SetNull)
+  landingPage Page?       @relation("LeadLandingPage", fields: [landingPageId], references: [id], onDelete: SetNull)
+  blogPost    BlogPost?   @relation("LeadBlogPost", fields: [blogPostId], references: [id], onDelete: SetNull)
+  form        Form?       @relation("LeadForm", fields: [formId], references: [id], onDelete: SetNull)
+  leadMagnet  LeadMagnet? @relation(fields: [leadMagnetId], references: [id], onDelete: SetNull)
+  assignedTo  User?       @relation("LeadAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  customer    Customer?   @relation(fields: [customerId], references: [id], onDelete: SetNull)
+
+  notes       LeadNote[]
+  activities  LeadActivity[]
+  submissions FormSubmission[]
+  consents    ConsentRecord[]
+
+  @@index([status, createdAt])
+  @@index([assignedToId])
+  @@index([email])
+  @@index([productId])
+  @@index([createdAt])
+  @@index([utmSource])
+  @@index([deletedAt])
+  @@index([customerId])
+  @@index([blogPostId])
+  @@index([countryId, createdAt])
+  @@index([countryId, status])
+}
+
+model LeadNote {
+  id       String  @id @default(cuid())
+  leadId   String
+  authorId String?
+  body     String  @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  lead   Lead  @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  author User? @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
+  @@index([leadId, createdAt])
+}
+
+model LeadActivity {
+  id      String           @id @default(cuid())
+  leadId  String
+  type    LeadActivityType
+  actorId String?
+  summary String           @db.Text
+  meta    Json             @default("{}")
+
+  createdAt DateTime @default(now())
+
+  lead  Lead  @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([leadId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// CRM — CUSTOMERS
+// ---------------------------------------------------------------------------
+
+model Customer {
+  id        String @id @default(cuid())
+  reference Int    @default(autoincrement())
+
+  name    String
+  company String?
+  email   String
+  phone   String?
+  website String?
+  address String? @db.Text
+  gstin   String?
+
+  status       CustomerStatus @default(PROSPECT)
+  assignedToId String?
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  assignedTo User?             @relation("CustomerAssignee", fields: [assignedToId], references: [id], onDelete: SetNull)
+  notes      CustomerNote[]
+  leads      Lead[]
+  products   CustomerProduct[]
+
+  @@index([email])
+  @@index([status])
+  @@index([assignedToId])
+  @@index([deletedAt])
+}
+
+model CustomerNote {
+  id         String  @id @default(cuid())
+  customerId String
+  authorId   String?
+  body       String  @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  author   User?    @relation(fields: [authorId], references: [id], onDelete: SetNull)
+
+  @@index([customerId, createdAt])
+}
+
+// Join model designed so future Subscription/Order models can extend it.
+model CustomerProduct {
+  id         String    @id @default(cuid())
+  customerId String
+  productId  String
+  quantity   Int       @default(1)
+  seats      Int?
+  unitPrice  Decimal?  @db.Decimal(12, 2)
+  startsAt   DateTime?
+  renewsAt   DateTime?
+  notes      String?   @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  product  Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@unique([customerId, productId])
+  @@index([productId])
+}
+
+// ---------------------------------------------------------------------------
+// LEAD MAGNETS & POPUPS
+// ---------------------------------------------------------------------------
+
+model LeadMagnet {
+  id          String         @id @default(cuid())
+  title       String
+  slug        String         @unique
+  kind        LeadMagnetKind @default(PDF)
+  description String?        @db.Text
+  isActive    Boolean        @default(true)
+
+  imageId         String?
+  fileId          String?
+  externalUrl     String?
+  formId          String?
+  ctaLabel        String  @default("Download")
+  thankYouTitle   String?
+  thankYouMessage String? @db.Text
+  thankYouUrl     String?
+
+  downloadCount Int @default(0)
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  image  Media?  @relation("LeadMagnetImage", fields: [imageId], references: [id], onDelete: SetNull)
+  file   Media?  @relation("LeadMagnetFile", fields: [fileId], references: [id], onDelete: SetNull)
+  form   Form?   @relation("LeadMagnetForm", fields: [formId], references: [id], onDelete: SetNull)
+  leads  Lead[]
+  popups Popup[] @relation("PopupLeadMagnet")
+
+  @@index([slug])
+}
+
+model Popup {
+  id        String    @id @default(cuid())
+  name      String
+  type      PopupType @default(LEAD_FORM)
+  isActive  Boolean   @default(false)
+  /// Null shows the popup in every market; setting it targets one market.
+  countryId String?
+
+  heading      String?
+  body         String? @db.Text
+  imageId      String?
+  formId       String?
+  leadMagnetId String?
+  ctaLabel     String?
+  ctaUrl       String?
+
+  trigger       PopupTrigger @default(DELAY)
+  delaySeconds  Int          @default(5)
+  scrollPercent Int          @default(50)
+  device        DeviceTarget @default(ALL)
+  frequencyDays Int          @default(7)
+  startsAt      DateTime?
+  endsAt        DateTime?
+  // Empty targeting == show everywhere
+  urlPatterns   Json         @default("[]") // string[] of glob-ish patterns
+
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  country     Country?          @relation(fields: [countryId], references: [id], onDelete: SetNull)
+  image       Media?            @relation("PopupImage", fields: [imageId], references: [id], onDelete: SetNull)
+  form        Form?             @relation("PopupForm", fields: [formId], references: [id], onDelete: SetNull)
+  leadMagnet  LeadMagnet?       @relation("PopupLeadMagnet", fields: [leadMagnetId], references: [id], onDelete: SetNull)
+  pageTargets PopupPageTarget[]
+
+  @@index([isActive])
+  @@index([countryId])
+}
+
+model PopupPageTarget {
+  popupId String
+  pageId  String
+
+  popup Popup @relation(fields: [popupId], references: [id], onDelete: Cascade)
+  page  Page  @relation(fields: [pageId], references: [id], onDelete: Cascade)
+
+  @@id([popupId, pageId])
+  @@index([pageId])
+}
+
+// ---------------------------------------------------------------------------
+// NAVIGATION
+// ---------------------------------------------------------------------------
+
+model Navigation {
+  id        String             @id @default(cuid())
+  /// Menus are per market: the UAE header is not forced to mirror India's.
+  countryId String
+  name      String
+  slug      String
+  location  NavigationLocation @default(HEADER)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  country Country          @relation(fields: [countryId], references: [id], onDelete: Restrict)
+  items   NavigationItem[]
+
+  @@unique([countryId, slug])
+  @@index([location])
+  @@index([countryId, location])
+}
+
+model NavigationItem {
+  id             String      @id @default(cuid())
+  navigationId   String
+  parentId       String?
+  label          String
+  linkType       NavLinkType @default(INTERNAL)
+  url            String?
+  pageId         String?
+  productId      String?
+  blogPostId     String?
+  blogCategoryId String?
+  description    String?
+  icon           String?
+  openInNewTab   Boolean     @default(false)
+  isHighlighted  Boolean     @default(false)
+  sortOrder      Int         @default(0)
+  isVisible      Boolean     @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  navigation   Navigation       @relation(fields: [navigationId], references: [id], onDelete: Cascade)
+  parent       NavigationItem?  @relation("NavItemChildren", fields: [parentId], references: [id], onDelete: Cascade)
+  children     NavigationItem[] @relation("NavItemChildren")
+  page         Page?            @relation(fields: [pageId], references: [id], onDelete: Cascade)
+  product      Product?         @relation(fields: [productId], references: [id], onDelete: Cascade)
+  blogPost     BlogPost?        @relation(fields: [blogPostId], references: [id], onDelete: Cascade)
+  blogCategory BlogCategory?    @relation(fields: [blogCategoryId], references: [id], onDelete: Cascade)
+
+  @@index([navigationId, sortOrder])
+  @@index([parentId])
+  @@index([pageId])
+  @@index([productId])
+  @@index([blogPostId])
+  @@index([blogCategoryId])
+}
+
+// ---------------------------------------------------------------------------
+// SETTINGS (singletons — id is always "singleton")
+// ---------------------------------------------------------------------------
+
+model WebsiteSettings {
+  id String @id @default("singleton")
+
+  // General
+  siteName        String  @default("Dropbox Reseller")
+  siteTitle       String  @default("Authorised Dropbox Reseller")
+  siteDescription String  @default("Buy Dropbox Business and Enterprise plans with local billing, onboarding and support.") @db.Text
+  siteUrl         String  @default("http://localhost:3000")
+  contactEmail    String?
+  contactPhone    String?
+  whatsappNumber  String?
+  address         String? @db.Text
+
+  // Socials
+  linkedinUrl  String?
+  twitterUrl   String?
+  facebookUrl  String?
+  instagramUrl String?
+  youtubeUrl   String?
+
+  // Branding
+  logoUrl     String?
+  logoDarkUrl String?
+  faviconUrl  String?
+  ogImageUrl  String?
+
+  // Typography — four roles. An empty value inherits the body font.
+  headingFont          String @default("Inter")
+  bodyFont             String @default("Inter")
+  navFont              String @default("")
+  buttonFont           String @default("")
+  headingWeight        String @default("700")
+  bodyWeight           String @default("400")
+  navWeight            String @default("500")
+  buttonWeight         String @default("600")
+  baseFontSize         String @default("16px")
+  // Responsive overrides. Empty inherits the larger breakpoint.
+  baseFontSizeTablet   String @default("")
+  baseFontSizeMobile   String @default("")
+  headingLineHeight    String @default("1.15")
+  bodyLineHeight       String @default("1.6")
+  headingLetterSpacing String @default("-0.02em")
+  bodyLetterSpacing    String @default("0em")
+  navFontSize          String @default("0.9375rem")
+  buttonFontSize       String @default("0.875rem")
+  headingScale         String @default("1")
+  headingScaleTablet   String @default("")
+  headingScaleMobile   String @default("")
+
+  // Colors — stored as hex, exposed as CSS custom properties
+  colorPrimary    String @default("#0061FF")
+  colorSecondary  String @default("#0B1B34")
+  colorAccent1    String @default("#1AC1A5")
+  colorAccent2    String @default("#FF8A3D")
+  colorBackground String @default("#FFFFFF")
+  colorText       String @default("#0B1B34")
+  colorMuted      String @default("#5B6B85")
+  colorBorder     String @default("#E3E8F0")
+
+  // Header
+  announcementText        String?
+  announcementUrl         String?
+  announcementEnabled     Boolean @default(false)
+  headerCtaLabel          String? @default("Talk to Sales")
+  headerCtaUrl            String? @default("/contact")
+  headerSecondaryCtaLabel String?
+  headerSecondaryCtaUrl   String?
+
+  // Footer
+  footerDescription       String? @db.Text
+  footerNewsletterEnabled Boolean @default(false)
+  footerNewsletterFormId  String?
+  copyrightText           String?
+
+  // Layout — global defaults every section can override
+  containerWidth       String @default("72rem")
+  containerPadding     String @default("1.5rem")
+  sectionSpacing       String @default("5rem")
+  sectionSpacingMobile String @default("3rem")
+  borderRadius         String @default("0.75rem")
+  cardRadius           String @default("1rem")
+
+  // Buttons
+  buttonRadius         String @default("0.5rem")
+  buttonPaddingX       String @default("1.25rem")
+  buttonPaddingY       String @default("0.625rem")
+  buttonPrimaryStyle   String @default("solid")
+  buttonSecondaryStyle String @default("outline")
+  buttonTextTransform  String @default("none")
+
+  // Misc
+  defaultCurrency String  @default("INR")
+  maintenanceMode Boolean @default(false)
+
+  updatedAt DateTime @updatedAt
+}
+
+model SeoSettings {
+  id String @id @default("singleton")
+
+  defaultTitle           String  @default("Authorised Dropbox Reseller")
+  titleTemplate          String  @default("%s | Dropbox Reseller")
+  defaultDescription     String  @default("Dropbox Business and Enterprise licences with local billing, migration and support.") @db.Text
+  defaultOgImageUrl      String?
+  twitterHandle          String?
+  organizationName       String  @default("Dropbox Reseller")
+  organizationLogoUrl    String?
+  organizationType       String  @default("Organization")
+  googleSiteVerification String?
+  bingSiteVerification   String?
+  robotsTxtExtra         String? @db.Text
+  sitemapEnabled         Boolean @default(true)
+  noIndexSite            Boolean @default(false)
+
+  updatedAt DateTime @updatedAt
+}
+
+model TrackingSettings {
+  id String @id @default("singleton")
+
+  ga4Id                    String?
+  ga4Enabled               Boolean @default(false)
+  gtmId                    String?
+  gtmEnabled               Boolean @default(false)
+  googleAdsId              String?
+  googleAdsEnabled         Boolean @default(false)
+  googleAdsConversionLabel String?
+  metaPixelId              String?
+  metaPixelEnabled         Boolean @default(false)
+  microsoftUetId           String?
+  microsoftUetEnabled      Boolean @default(false)
+  hotjarId                 String?
+  hotjarEnabled            Boolean @default(false)
+  linkedinPartnerId        String?
+  linkedinEnabled          Boolean @default(false)
+  tiktokPixelId            String?
+  tiktokEnabled            Boolean @default(false)
+
+  consentRequired Boolean @default(false)
+  consentMessage  String? @db.Text
+
+  updatedAt DateTime @updatedAt
+}
+
+// Free-form scripts are a privileged, audited feature (marketing.manage only).
+model TrackingScript {
+  id              String            @id @default(cuid())
+  name            String
+  placement       ScriptPlacement   @default(HEAD)
+  environment     ScriptEnvironment @default(ALL)
+  isActive        Boolean           @default(false)
+  requiresConsent Boolean           @default(true)
+  code            String            @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive, placement])
+}
+
+model EmailSettings {
+  id String @id @default("singleton")
+
+  host       String?
+  port       Int     @default(587)
+  username   String?
+  password   String? // encrypted at rest; never sent to the client
+  encryption String  @default("tls") // none | tls | ssl
+  fromName   String  @default("Dropbox Reseller")
+  fromEmail  String?
+  replyTo    String?
+
+  notifyOnNewLead         Boolean @default(true)
+  notifyOnAssignment      Boolean @default(true)
+  notifyOnSubmission      Boolean @default(false)
+  salesNotificationEmails String? @db.Text // comma-separated
+
+  isEnabled Boolean @default(false)
+
+  updatedAt DateTime @updatedAt
+}
+
+model EmailTemplate {
+  id       String  @id @default(cuid())
+  key      String  @unique // new_lead, lead_assigned, form_submission
+  name     String
+  subject  String
+  body     String  @db.Text // simple {{token}} interpolation
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Redirect {
+  id          String       @id @default(cuid())
+  source      String       @unique
+  destination String
+  type        RedirectType @default(PERMANENT)
+  isActive    Boolean      @default(true)
+  hitCount    Int          @default(0)
+  note        String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive])
+}
+
+// ---------------------------------------------------------------------------
+// AUDIT
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id         String  @id @default(cuid())
+  actorId    String?
+  actorEmail String?
+  action     String // created | updated | deleted | published | ...
+  entity     String // Page | Product | Lead | ...
+  entityId   String?
+  summary    String? @db.Text
+  before     Json?
+  after      Json?
+  ipHash     String?
+  userAgent  String? @db.Text
+
+  createdAt DateTime @default(now())
+
+  actor User? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([entity, entityId])
+  @@index([actorId])
+  @@index([createdAt])
+}
+
+/// A single backup archive.
+///
+/// The row is created before the work starts so a crashed or killed process
+/// still leaves a visible FAILED record rather than nothing at all.
+model Backup {
+  id      String        @id @default(cuid())
+  type    BackupType
+  status  BackupStatus  @default(PENDING)
+  storage BackupStorage
+  origin  BackupOrigin  @default(MANUAL)
+
+  fileName   String?
+  /// Key within the backup storage provider. Never a user-supplied path.
+  storageKey String?
+  /// Archives can exceed 2 GB, which overflows a 32-bit Int.
+  sizeBytes  BigInt?
+  /// SHA-256 of the finished archive, re-verified before any restore.
+  checksum   String?
+
+  /// Copied from manifest.json so History can be read without opening archives.
+  manifestVersion  Int?
+  appVersion       String?
+  mediaIncluded    Boolean @default(false)
+  databaseIncluded Boolean @default(false)
+
+  startedAt    DateTime?
+  completedAt  DateTime?
+  failedAt     DateTime?
+  /// Sanitised before storage — never contains a connection string or secret.
+  errorMessage String?   @db.Text
+
+  createdById String?
+  /// Retained for compatibility with the original spec; mirrors origin != MANUAL.
+  automatic   Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  createdBy User?           @relation("BackupCreator", fields: [createdById], references: [id], onDelete: SetNull)
+  restores  BackupRestore[]
+
+  @@index([createdAt])
+  @@index([status])
+  @@index([type, status])
+  @@index([origin])
+}
+
+/// One restore attempt, kept even when it fails so the history is auditable.
+model BackupRestore {
+  id       String       @id @default(cuid())
+  backupId String
+  status   BackupStatus @default(RUNNING)
+
+  /// The safety backup taken immediately before this restore.
+  safetyBackupId String?
+
+  startedAt    DateTime  @default(now())
+  completedAt  DateTime?
+  failedAt     DateTime?
+  errorMessage String?   @db.Text
+
+  restoredById String?
+
+  backup Backup @relation(fields: [backupId], references: [id], onDelete: Cascade)
+
+  @@index([backupId])
+  @@index([startedAt])
+}
+
+/// Schedule for automatic backups. A singleton, like the other settings rows.
+model BackupSchedule {
+  id      String  @id @default("singleton")
+  enabled Boolean @default(false)
+
+  /// daily | weekly | monthly
+  frequency  String     @default("daily")
+  hour       Int        @default(3)
+  minute     Int        @default(0)
+  /// Day of week for weekly (0 = Sunday) or day of month for monthly.
+  dayOfWeek  Int        @default(0)
+  dayOfMonth Int        @default(1)
+  backupType BackupType @default(FULL)
+  timezone   String     @default("Asia/Kolkata")
+
+  retentionDaily   Int @default(7)
+  retentionWeekly  Int @default(4)
+  retentionMonthly Int @default(3)
+
+  lastRunAt DateTime?
+  nextRunAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+/// Single-row claim guarding backup and restore.
+///
+/// An advisory lock alone is re-entrant within a session, and Prisma pools
+/// connections, so two acquisitions can share a connection and both succeed.
+/// This row is unambiguous across connections; `expiresAt` lets a claim left
+/// by a killed container lapse rather than blocking the system forever.
+model BackupLock {
+  id         String   @id @default("singleton")
+  operation  String
+  holder     String?
+  acquiredAt DateTime @default(now())
+  expiresAt  DateTime
+}
+
+// ---------------------------------------------------------------------------
+// CONSENT
+// ---------------------------------------------------------------------------
+
+/**
+ * A version of the consent notice shown beside a form.
+ * Immutable once published. Editing the wording in the CMS writes a new
+ * version rather than changing this row, because a submission stores which
+ * version it was shown and that has to stay readable years later — the point
+ * of the record is to prove what the person actually agreed to.
+ */
+model ConsentNotice {
+  id        String  @id @default(cuid())
+  /// Groups the versions of one notice. "default" is the site-wide one.
+  key       String
+  version   Int
+  /// The version served to new submissions. Exactly one per key; the save
+  /// action moves it forward.
+  isCurrent Boolean @default(false)
+
+  /// Null means the notice applies to every market.
+  countryId String?
+
+  /// What the information is collected for, in plain words. Shown above the
+  /// tick boxes and copied into every submission's evidence.
+  purposeText String @db.Text
+
+  /// The required processing tick box.
+  enquiryLabel   String @db.Text
+  /// The optional marketing tick box. Never required to submit.
+  marketingLabel String @db.Text
+  /// The Terms acceptance tick box, when the form asks for one.
+  termsLabel     String @db.Text
+  /// How to withdraw consent or ask a question about the data.
+  withdrawalText String @db.Text
+
+  privacyUrl     String
+  privacyVersion String?
+  termsUrl       String
+  termsVersion   String?
+
+  createdAt   DateTime @default(now())
+  createdById String?
+
+  country   Country?        @relation(fields: [countryId], references: [id], onDelete: Cascade)
+  createdBy User?           @relation("ConsentNoticeAuthor", fields: [createdById], references: [id], onDelete: SetNull)
+  records   ConsentRecord[]
+
+  @@unique([key, version])
+  @@index([key, isCurrent])
+  @@index([countryId])
+}
+
+/**
+ * What one person agreed to, at the moment they submitted.
+ * The notice text is snapshotted rather than referenced alone: a notice row
+ * can be deleted, a country can be removed, and the evidence still has to say
+ * exactly what was on screen. The three consents stay three columns — folding
+ * them into one boolean would lose the distinction between "agreed we may
+ * answer the enquiry" and "agreed to marketing", which are different
+ * permissions with different consequences.
+ */
+model ConsentRecord {
+  id String @id @default(cuid())
+
+  leadId       String?
+  submissionId String? @unique
+  countryId    String?
+
+  noticeId       String?
+  noticeKey      String
+  noticeVersion  Int
+  /// Exact wording shown, as rendered. Kept even if the notice row goes away.
+  noticeSnapshot Json
+  purposeText    String  @db.Text
+
+  lawfulBasis LawfulBasis @default(CONSENT)
+
+  /// Agreed the enquiry may be processed. Required when the basis is CONSENT.
+  enquiryConsent   Boolean @default(false)
+  /// Optional. Never a condition of submitting.
+  marketingConsent Boolean @default(false)
+  /// Only meaningful when the form asked for Terms acceptance.
+  termsAccepted    Boolean @default(false)
+  termsRequired    Boolean @default(false)
+
+  /// Was marketing wording actually on screen? Null on every record written
+  /// before the combined box existed — "not recorded", never guessed either
+  /// way, so historical evidence is not reinterpreted.
+  marketingPresented Boolean?
+  /// The exact sentence beside the tick box, as the visitor saw it. Null for
+  /// records written before there was one, and for forms that show no box.
+  displayedLabel     String?  @db.Text
+  /// Which market's notice was shown: null for the shared one, otherwise the
+  /// country code. Stored as a code rather than an id so the evidence still
+  /// reads correctly after a market is removed.
+  noticeScope        String?
+
+  privacyUrl     String
+  privacyVersion String?
+  termsUrl       String
+  termsVersion   String?
+
+  /// Server clock, UTC. Never taken from the browser.
+  consentedAt DateTime @default(now())
+
+  /// Set when consent is withdrawn. The booleans above are left as they were:
+  /// this points at the withdrawal, it does not rewrite what was agreed.
+  withdrawnAt    DateTime?
+  withdrawnScope ConsentScope?
+
+  lead       Lead?           @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  submission FormSubmission? @relation(fields: [submissionId], references: [id], onDelete: SetNull)
+  country    Country?        @relation(fields: [countryId], references: [id], onDelete: SetNull)
+  notice     ConsentNotice?  @relation(fields: [noticeId], references: [id], onDelete: SetNull)
+  events     ConsentEvent[]
+
+  @@index([leadId])
+  @@index([countryId, consentedAt])
+  @@index([marketingConsent, withdrawnAt])
+}
+
+/**
+ * Append-only history for one consent record.
+ */
+model ConsentEvent {
+  id       String           @id @default(cuid())
+  recordId String
+  type     ConsentEventType
+  scope    ConsentScope
+
+  /// The value the scope moved to, so the log reads without inference.
+  value Boolean
+
+  /// Who caused it: the visitor at submission, or a staff member acting on a
+  /// request. Null actor with VISITOR source is the original grant.
+  actorId   String?
+  actorType String  @default("VISITOR")
+  note      String? @db.Text
+  ipAddress String?
+
+  createdAt DateTime @default(now())
+
+  record ConsentRecord @relation(fields: [recordId], references: [id], onDelete: Cascade)
+  actor  User?         @relation("ConsentEventActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([recordId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// COUNTRY CONTENT SYNC
+// ---------------------------------------------------------------------------
+
+/**
+ * One row per record copied from the source market into a destination market.
+ * This is what makes a repeat run idempotent: the sync looks up the source id
+ * here before creating anything, so running it twice updates or skips rather
+ * than producing a second copy. `locallyEdited` is set when the destination
+ * row changes after import, which is how "preserve local changes" is decided
+ * without guessing from timestamps alone.
+ */
+model CountrySyncMapping {
+  id              String @id @default(cuid())
+  sourceCountryId String
+  targetCountryId String
+
+  /// PAGE | PRODUCT | FORM — the allowlist lives in code, not here.
+  entityType String
+  sourceId   String
+  targetId   String
+
+  /// The source row's updatedAt at the last successful copy, so a later run
+  /// can tell whether the source actually changed.
+  sourceUpdatedAt   DateTime?
+  /// The destination row's updatedAt just after the copy. A destination whose
+  /// updatedAt has moved past this has been edited locally.
+  targetSyncedAt    DateTime?
+  /// When the destination copy was found to be gone.
+  ///
+  /// A tombstone, and the reason this table has no foreign key to the row it
+  /// points at: deleting the copy must leave this record standing, because it
+  /// is the only evidence that the market once had the item and chose to
+  /// remove it. Without it the next run would see "missing" and helpfully put
+  /// it back, undoing a deliberate decision every single time.
+  deletedInTargetAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  sourceCountry Country @relation("SyncSource", fields: [sourceCountryId], references: [id], onDelete: Cascade)
+  targetCountry Country @relation("SyncTarget", fields: [targetCountryId], references: [id], onDelete: Cascade)
+
+  @@unique([targetCountryId, entityType, sourceId])
+  @@index([targetCountryId, entityType])
+  @@index([sourceCountryId])
+}
+
+/**
+ * One execution of the sync, with its counts and audit log.
+ */
+model CountrySyncRun {
+  id              String     @id @default(cuid())
+  sourceCountryId String
+  targetCountryId String
+  mode            SyncMode   @default(ADD_MISSING)
+  status          SyncStatus @default(PENDING)
+
+  /// Set for a dry run that only reports what would happen.
+  previewOnly Boolean @default(false)
+
+  createdCount  Int @default(0)
+  updatedCount  Int @default(0)
+  skippedCount  Int @default(0)
+  conflictCount Int @default(0)
+  failedCount   Int @default(0)
+
+  /// Per-entity detail: what was created, skipped, and why.
+  log   Json    @default("[]")
+  error String? @db.Text
+
+  startedById String?
+  startedAt   DateTime  @default(now())
+  finishedAt  DateTime?
+
+  sourceCountry Country @relation("SyncRunSource", fields: [sourceCountryId], references: [id], onDelete: Cascade)
+  targetCountry Country @relation("SyncRunTarget", fields: [targetCountryId], references: [id], onDelete: Cascade)
+  startedBy     User?   @relation("SyncRunActor", fields: [startedById], references: [id], onDelete: SetNull)
+
+  @@index([targetCountryId, startedAt])
+  @@index([status])
+}

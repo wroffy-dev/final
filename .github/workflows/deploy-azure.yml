@@ -1,0 +1,230 @@
+name: Deploy to Azure Container Apps
+
+# Push to main, or run by hand from the Actions tab.
+#
+# Quality gates run first and the deploy job depends on them, so a failing
+# typecheck, test or build stops the release before an image is ever built. There
+# is no `|| true` and no `continue-on-error` anywhere in this file: a step that
+# fails is meant to stop the deployment.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      skip_quality_gates:
+        description: 'Deploy without re-running tests (emergency rollback only)'
+        type: boolean
+        default: false
+
+# One deployment at a time. Two concurrent revisions of the same app racing each
+# other's migrations is the one failure mode worth preventing outright, so this
+# queues rather than cancelling — cancelling mid-deploy could leave a revision
+# half-provisioned.
+concurrency:
+  group: deploy-azure
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  # Required for Azure login via OpenID Connect. This is what lets the workflow
+  # authenticate with a short-lived, federated token instead of a stored client
+  # secret that would need rotating and could be exfiltrated from the logs.
+  id-token: write
+
+jobs:
+  quality:
+    name: Quality gates
+    if: ${{ !inputs.skip_quality_gates }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: dropbox_reseller_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/dropbox_reseller_test?schema=public
+      AUTH_SECRET: ci-auth-secret-value-not-used-in-production
+      ENCRYPTION_KEY: ci-encryption-key-value-not-used-in-production
+      MFA_ENCRYPTION_KEY: ci-mfa-encryption-key-value-not-used-in-production
+      NEXT_TELEMETRY_DISABLED: '1'
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx prisma validate
+      - run: npx prisma generate
+      - run: npx prisma migrate deploy
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run test
+      - run: npm run build
+
+  deploy:
+    name: Build image and deploy
+    needs: [quality]
+    # `always()` plus an explicit result check, so the emergency path can skip
+    # the gates without this job being skipped along with them.
+    if: ${{ always() && (needs.quality.result == 'success' || inputs.skip_quality_gates) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+
+    env:
+      # Repository or environment *variables* (Settings → Secrets and variables
+      # → Actions → Variables). These are not secrets: they are resource names
+      # that appear in the Azure portal.
+      REGISTRY: ${{ vars.AZURE_CONTAINER_REGISTRY_SERVER }}
+      REGISTRY_NAME: ${{ vars.AZURE_CONTAINER_REGISTRY }}
+      RESOURCE_GROUP: ${{ vars.AZURE_RESOURCE_GROUP }}
+      CONTAINER_APP: ${{ vars.AZURE_CONTAINER_APP_NAME }}
+      IMAGE_NAME: dropbox-reseller
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check required configuration
+        # Fail with a readable message rather than letting a blank variable turn
+        # into an opaque `az` error four steps later.
+        run: |
+          missing=""
+          for name in REGISTRY REGISTRY_NAME RESOURCE_GROUP CONTAINER_APP; do
+            eval "value=\${$name}"
+            if [ -z "$value" ]; then missing="$missing $name"; fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository variables:$missing"
+            echo "Set them under Settings → Secrets and variables → Actions → Variables."
+            exit 1
+          fi
+
+      - name: Azure login (OpenID Connect)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign in to Azure Container Registry
+        # Via `az acr login`, so the registry password never exists as a GitHub
+        # secret — the federated Azure token authorises the push.
+        run: az acr login --name "$REGISTRY_NAME"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          # Tagged by commit SHA so every revision is traceable to a commit and a
+          # rollback is a matter of naming an older tag. `latest` moves too, for
+          # convenience, but the deployment always references the SHA.
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest
+          # No build arguments and no secrets: the image must be reusable across
+          # environments, and a secret in a layer is readable by anyone who can
+          # pull it. Runtime configuration comes from Container Apps secrets.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      - name: Deploy revision
+        run: |
+          set -euo pipefail
+          az containerapp update \
+            --name "$CONTAINER_APP" \
+            --resource-group "$RESOURCE_GROUP" \
+            --image "$REGISTRY/$IMAGE_NAME:${{ github.sha }}" \
+            --output none
+          echo "Requested revision for image $IMAGE_NAME:${{ github.sha }}"
+
+      - name: Wait for the revision to become healthy
+        # `az containerapp update` returns as soon as the revision is requested,
+        # not when it is serving. Without this the workflow would report success
+        # for a revision that crash-loops on a bad migration.
+        run: |
+          set -euo pipefail
+          deadline=$(( $(date +%s) + 600 ))
+
+          while :; do
+            revision=$(az containerapp show \
+              --name "$CONTAINER_APP" --resource-group "$RESOURCE_GROUP" \
+              --query "properties.latestRevisionName" -o tsv)
+
+            state=$(az containerapp revision show \
+              --name "$CONTAINER_APP" --resource-group "$RESOURCE_GROUP" \
+              --revision "$revision" \
+              --query "properties.runningState" -o tsv 2>/dev/null || echo Unknown)
+
+            echo "revision=$revision state=$state"
+
+            case "$state" in
+              Running|RunningAtMaxScale)
+                echo "Revision $revision is running."
+                exit 0
+                ;;
+              Failed|Degraded)
+                echo "::error::Revision $revision reported state $state."
+                az containerapp logs show \
+                  --name "$CONTAINER_APP" --resource-group "$RESOURCE_GROUP" \
+                  --revision "$revision" --tail 100 --type console || true
+                exit 1
+                ;;
+            esac
+
+            if [ "$(date +%s)" -ge "$deadline" ]; then
+              echo "::error::Revision $revision did not become healthy within 10 minutes (last state: $state)."
+              az containerapp logs show \
+                --name "$CONTAINER_APP" --resource-group "$RESOURCE_GROUP" \
+                --revision "$revision" --tail 100 --type console || true
+              exit 1
+            fi
+            sleep 10
+          done
+
+      - name: Verify the deployment serves traffic
+        # The revision running is not the same as the app working. This checks the
+        # public endpoint, and fails the workflow if it does not answer.
+        run: |
+          set -euo pipefail
+          fqdn=$(az containerapp show \
+            --name "$CONTAINER_APP" --resource-group "$RESOURCE_GROUP" \
+            --query "properties.configuration.ingress.fqdn" -o tsv)
+
+          if [ -z "$fqdn" ]; then
+            echo "::warning::No external ingress configured; skipping endpoint verification."
+            exit 0
+          fi
+
+          node scripts/verify-production.mjs "https://$fqdn"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### Deployment"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+            echo "| Image | \`$IMAGE_NAME:${{ github.sha }}\` |"
+            echo "| Container App | \`$CONTAINER_APP\` |"
+            echo "| Resource group | \`$RESOURCE_GROUP\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
