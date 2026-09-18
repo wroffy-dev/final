@@ -320,13 +320,21 @@ The image:
 
 ## Deploying with Coolify
 
+The short version is below. For the full walkthrough — secrets, volumes, the
+first admin account, scheduled backups, upgrades and what to check when a
+container will not stay up — see
+**[docs/VPS-DEPLOYMENT.md](docs/VPS-DEPLOYMENT.md)**, which also covers running
+on a plain server without Coolify.
+
 1. **Create the database.** Add a PostgreSQL resource in Coolify and copy its
    internal connection string.
 2. **Create the application.** Point it at this repository, choose the
    Dockerfile build pack, and set the port to `3000`.
-3. **Set the environment variables** listed above. At minimum: `DATABASE_URL`,
-   `AUTH_SECRET`, `ENCRYPTION_KEY`, `NEXTAUTH_URL` and `NEXT_PUBLIC_SITE_URL`,
-   the last two set to your real domain.
+3. **Set the environment variables** listed above. All six of `DATABASE_URL`,
+   `AUTH_SECRET`, `ENCRYPTION_KEY`, `MFA_ENCRYPTION_KEY`, `NEXTAUTH_URL` and
+   `NEXT_PUBLIC_SITE_URL` are required — startup validation exits on a missing
+   one, so a container that will not stay up is usually this list. The two URLs
+   must be your real domain, over `https://`.
 4. **First deploy.** Set `RUN_SEED=true` together with `SEED_ADMIN_EMAIL` and
    `SEED_ADMIN_PASSWORD`. Deploy, sign in at `/admin`, change the password, then
    remove those three variables and redeploy.
@@ -336,7 +344,10 @@ The image:
    directory loses the whole media library — silently, because everything keeps
    working until someone looks for an older image. Only a deployment using S3
    or R2 can skip it.
-6. **Health check.** Coolify picks up the Dockerfile `HEALTHCHECK`
+6. **Persist backups.** Add a second volume at `/app/backups`. Keep it even if
+   you move backup storage to S3: restores and imports stage archives there
+   before reading them.
+7. **Health check.** Coolify picks up the Dockerfile `HEALTHCHECK`
    automatically; if you configure one manually, use `/api/health`.
 
 `RUN_MIGRATIONS` defaults to `true`, so each deploy applies pending migrations
