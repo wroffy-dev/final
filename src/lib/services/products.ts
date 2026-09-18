@@ -278,6 +278,32 @@ export const getPublicProduct = cache(
   },
 );
 
+/**
+ * A product's builder sections, ordered.
+ *
+ * Deliberately not part of `PublicProduct`: that DTO is what every product card
+ * in a listing is built from, and loading each product's sections to render a
+ * card would be a query per card for content no card shows. Only the detail
+ * page asks for these.
+ *
+ * Sections are global to the product — the market is applied at render time,
+ * where `localiseContent` rewrites the internal links inside them.
+ */
+export const getProductSections = cache(async (productId: string) => {
+  return prisma.productSection.findMany({
+    where: { productId },
+    orderBy: { sortOrder: 'asc' },
+    select: {
+      id: true,
+      blockType: true,
+      content: true,
+      settings: true,
+      isVisible: true,
+      sortOrder: true,
+    },
+  });
+});
+
 /** The market-level SEO record for a product page, without loading the product. */
 export const getProductSeo = cache(async (countryId: string, slug: string) => {
   return prisma.productCountry.findFirst({

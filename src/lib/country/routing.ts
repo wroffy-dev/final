@@ -137,26 +137,100 @@ export function countryPath(country: Pick<CountryContext, 'slug'>, path = ''): s
 }
 
 /**
+ * Hostnames that are this site itself.
+ *
+ * Read from `NEXT_PUBLIC_SITE_URL`, which is the same value the canonical URLs
+ * and sitemaps are built from and which production refuses to boot without —
+ * so it is the site's real domain, not a guess. `NEXT_PUBLIC_` is inlined at
+ * build time, so this works in the browser too and costs no request-time work.
+ *
+ * `www.` is folded away: a site served at both spellings is one site, and an
+ * editor who pasted the other one did not mean a different destination.
+ *
+ * The admin-editable `WebsiteSettings.siteUrl` is deliberately *not* consulted.
+ * It defaults to `http://localhost:3000` and nothing forces it to be right, so
+ * treating it as an identity would let a stale or mistaken value start
+ * rewriting links to a domain that genuinely is somebody else's.
+ */
+function normaliseHost(host: string): string {
+  return host.trim().toLowerCase().replace(/^www\./, '');
+}
+
+function ownHosts(): string[] {
+  const configured = process.env.NEXT_PUBLIC_SITE_URL;
+  if (!configured) return [];
+  try {
+    return [normaliseHost(new URL(configured).host)];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * The path inside `value` when `value` is an absolute URL pointing at this very
+ * site, or null when it points anywhere else.
+ *
+ * This is what closes the gap that made every market's menu lead back to the
+ * root market. An editor who types `/pricing` gets a link that follows them
+ * into the UAE; one who pastes `https://oursite.com/pricing` — which the menu
+ * editor stores as an External URL, and which the country sync then copies
+ * verbatim into every new market — got a link that walked them out of it. The
+ * two are the same destination written two ways, so they resolve the same way.
+ *
+ * A URL on any other host is left alone: rewriting a genuinely external link
+ * would send visitors somewhere the editor never chose.
+ */
+export function ownHostPath(value: string, hosts: readonly string[] = ownHosts()): string | null {
+  if (hosts.length === 0) return null;
+  let parsed: URL;
+  try {
+    /*
+     * The base only exists so a protocol-relative `//host/path` can be parsed;
+     * it never supplies the host, because any value reaching here carries its
+     * own. A value that does not — a bare `pricing` — resolves to the base's
+     * host, which is not a real one and so matches nothing.
+     */
+    parsed = new URL(value, 'https://not-a-real-host.invalid');
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return null;
+  if (!hosts.includes(normaliseHost(parsed.host))) return null;
+  return `${parsed.pathname}${parsed.search}${parsed.hash}`;
+}
+
+/**
  * Rewrites an internal link so it stays inside `country`.
  *
- * Left untouched: external URLs, anchors, query-only links, `mailto:`/`tel:`,
- * protocol-relative URLs, system routes, and any path that already carries a
- * market prefix. Everything else — the root-relative links an editor types
- * into a CTA — gains the current market's prefix.
+ * Left untouched: URLs on other hosts, anchors, query-only links,
+ * `mailto:`/`tel:`, system routes, and any path that already carries a market
+ * prefix. Everything else — the root-relative links an editor types into a CTA,
+ * and absolute URLs that point back at this same site — gains the current
+ * market's prefix.
  *
  * For the default market this is the identity function, which is why the root
  * market's rendered HTML is unchanged by the multi-market conversion.
  */
-export function countryHref(country: CountryContext, href: string | null | undefined): string {
+export function countryHref(
+  country: CountryContext,
+  href: string | null | undefined,
+  hosts: readonly string[] = ownHosts(),
+): string {
   if (!href) return href ?? '';
   const value = href.trim();
   if (!value) return href;
   if (country.isDefault || !country.slug) return href;
 
-  // Not an internal path: external, anchor, query, mailto/tel, or //host.
-  if (!value.startsWith('/') || value.startsWith('//')) return href;
+  // Not a root-relative path: an anchor, a query, mailto/tel, or a URL with a
+  // host. Only the last of those can still be ours, and only then by its host.
+  let candidate = value;
+  if (!value.startsWith('/') || value.startsWith('//')) {
+    const own = ownHostPath(value, hosts);
+    if (own === null) return href;
+    candidate = own;
+  }
 
-  const [pathPart = '', ...restParts] = value.split(/(?=[?#])/);
+  const [pathPart = '', ...restParts] = candidate.split(/(?=[?#])/);
   const suffix = restParts.join('');
   const segments = pathSegments(pathPart);
   const first = segments[0];
@@ -225,9 +299,25 @@ export function contentSlug(path: string): string {
  * walked at all, so the root market's rendering path is completely unchanged.
  * System routes and already-prefixed links are left alone by `countryHref`.
  */
-export function localiseContent<T>(content: T, country: CountryContext): T {
+export function localiseContent<T>(
+  content: T,
+  country: CountryContext,
+  hosts: readonly string[] = ownHosts(),
+): T {
   if (country.isDefault || !country.slug) return content;
-  return walk(content, country) as T;
+  // Resolved once for the whole payload rather than per string.
+  return walk(content, country, hosts) as T;
+}
+
+/**
+ * Whether a string is worth parsing as a URL with a host.
+ *
+ * A cheap guard in front of `ownHostPath`, which has to construct a `URL`.
+ * Block payloads are mostly prose, and headings and body copy should not each
+ * pay for a parse that can only ever fail.
+ */
+function looksAbsolute(value: string): boolean {
+  return value.startsWith('//') || value.includes('://');
 }
 
 /**
@@ -238,28 +328,46 @@ export function localiseContent<T>(content: T, country: CountryContext): T {
  * gets the same treatment the structured fields get — and the same exemptions,
  * because every candidate still goes through `countryHref`.
  */
-export function localiseHtml(html: string, country: CountryContext): string {
+export function localiseHtml(
+  html: string,
+  country: CountryContext,
+  hosts: readonly string[] = ownHosts(),
+): string {
   if (country.isDefault || !country.slug) return html;
   if (!html.includes('/')) return html;
+  /*
+   * Every `href`/`src` is offered, not just the root-relative ones, because an
+   * editor's link to this same site is just as internal written out in full.
+   * `countryHref` is still the only thing that decides: a URL on another host,
+   * a `mailto:` or a system route comes back exactly as it was.
+   */
   return html.replace(
-    /\b(href|src)=("|')(\/[^"']*)\2/gi,
+    /\b(href|src)=("|')([^"']*)\2/gi,
     (match, attribute: string, quote: string, url: string) =>
-      `${attribute}=${quote}${countryHref(country, url)}${quote}`,
+      `${attribute}=${quote}${countryHref(country, url, hosts)}${quote}`,
   );
 }
 
-function walk(value: unknown, country: CountryContext): unknown {
+function walk(value: unknown, country: CountryContext, hosts: readonly string[]): unknown {
   if (typeof value === 'string') {
-    // A root-relative path is localised directly; anything else is prose, which
-    // may still carry markup links.
-    if (value.startsWith('/')) return countryHref(country, value);
-    return value.includes('<') ? localiseHtml(value, country) : value;
+    // A root-relative path is localised directly.
+    if (value.startsWith('/')) return countryHref(country, value, hosts);
+    // Prose, which may still carry markup links.
+    if (value.includes('<')) return localiseHtml(value, country, hosts);
+    /*
+     * A bare absolute URL in a field of its own — a CTA's `ctaUrl`, a card's
+     * link. When it points back at this site it is an internal link written
+     * the long way, and has to follow the visitor into their market like any
+     * other; `countryHref` returns anything else untouched.
+     */
+    if (looksAbsolute(value)) return countryHref(country, value, hosts);
+    return value;
   }
-  if (Array.isArray(value)) return value.map((item) => walk(item, country));
+  if (Array.isArray(value)) return value.map((item) => walk(item, country, hosts));
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
-      out[key] = walk(item, country);
+      out[key] = walk(item, country, hosts);
     }
     return out;
   }

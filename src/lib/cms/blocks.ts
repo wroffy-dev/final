@@ -65,6 +65,15 @@ const heroSchema = z.object({
     .enum(['content', 'contentImage', 'contentForm', 'contentImageForm', 'backgroundImage'])
     .catch('content')
     .default('content'),
+  /**
+   * How much of the row the copy takes when the hero has a second column.
+   *
+   * Stored as the copy's share, so the aside is always the remainder — a
+   * 60 here is the 60/40 text-to-form split. `50` reproduces the even two
+   * columns every existing hero was built with, which is why it is the
+   * default and why `catch` lands there for anything unrecognised.
+   */
+  splitRatio: z.enum(['50', '55', '60', '65', '70']).catch('50').default('50'),
   eyebrow: z.string().max(120).default(''),
   heading: z.string().max(240).default('A headline that states the offer'),
   description: z.string().max(1200).default(''),
@@ -587,6 +596,25 @@ const PAGE_BLOCKS: Record<string, BlockDefinition> = {
           { label: 'Content + form', value: 'contentForm' },
           { label: 'Content + image + form', value: 'contentImageForm' },
           { label: 'Background image', value: 'backgroundImage' },
+        ],
+      },
+      {
+        kind: 'select',
+        name: 'splitRatio',
+        label: 'Column split',
+        width: 'half',
+        help: 'How the row divides between the copy and the image or form beside it.',
+        // Only meaningful when there is a second column to divide with.
+        showWhen: {
+          field: 'layout',
+          equals: ['contentImage', 'contentForm', 'contentImageForm'],
+        },
+        options: [
+          { label: 'Even (50 / 50)', value: '50' },
+          { label: '55 / 45', value: '55' },
+          { label: '60 / 40', value: '60' },
+          { label: '65 / 35', value: '65' },
+          { label: '70 / 30', value: '70' },
         ],
       },
       {

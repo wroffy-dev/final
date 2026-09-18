@@ -10,6 +10,10 @@ import {
   ProductCountryPricing,
   type ProductCountryValues,
 } from '@/components/admin/products/product-country-pricing';
+import { ProductEditorTabs } from '@/components/admin/products/product-editor-tabs';
+import { ProductWorkspace } from '@/components/cms/product-workspace';
+import type { BuilderSection } from '@/components/cms/section-builder';
+import type { FieldValues } from '@/components/cms/field-renderer';
 import { listAccessibleCountries } from '@/lib/country/access';
 import { countryPath } from '@/lib/country/routing';
 import { ContentStatusBadge } from '@/components/admin/lead-status-badge';
@@ -55,6 +59,7 @@ export default async function EditProduct({ params }: { params: Promise<{ id: st
       include: {
         ctaForm: { select: { slug: true } },
         countries: true,
+        sections: { orderBy: { sortOrder: 'asc' } },
         _count: { select: { leads: true } },
       },
     }),
@@ -150,6 +155,17 @@ export default async function EditProduct({ params }: { params: Promise<{ id: st
     };
   });
 
+  const sections: BuilderSection[] = product.sections.map((section) => ({
+    id: section.id,
+    blockType: section.blockType,
+    name: section.name,
+    isVisible: section.isVisible,
+    sortOrder: section.sortOrder,
+    content: (section.content ?? {}) as FieldValues,
+    settings: (section.settings ?? {}) as FieldValues,
+  }));
+  const visibleCount = sections.filter((section) => section.isVisible).length;
+
   // "View live" points at a market that actually publishes the product.
   const liveIn = countries.find((country) =>
     product.countries.some(
@@ -158,7 +174,7 @@ export default async function EditProduct({ params }: { params: Promise<{ id: st
   );
 
   return (
-    <div className="mx-auto max-w-3xl">
+    <>
       <AdminPageHeader
         title={product.name}
         description={`${product._count.leads} lead(s) attributed to this product`}
@@ -180,20 +196,38 @@ export default async function EditProduct({ params }: { params: Promise<{ id: st
           </>
         }
       />
-      <ProductForm
-        initial={initial}
-        categories={categories}
-        brands={brands}
-        formIdBySlug={Object.fromEntries(forms.map((f) => [f.slug, f.id]))}
-        mode="edit"
+      <ProductEditorTabs
+        sectionCount={sections.length}
+        visibleCount={visibleCount}
+        details={
+          <div className="mx-auto max-w-3xl">
+            <ProductForm
+              initial={initial}
+              categories={categories}
+              brands={brands}
+              formIdBySlug={Object.fromEntries(forms.map((f) => [f.slug, f.id]))}
+              mode="edit"
+            />
+          </div>
+        }
+        builder={
+          <ProductWorkspace
+            productId={product.id}
+            initialSections={sections}
+            canEdit={userCan(user, 'products.edit')}
+          />
+        }
+        markets={
+          <div className="mx-auto max-w-3xl">
+            <ProductCountryPricing
+              productId={product.id}
+              rows={countryRows}
+              forms={forms.map((form) => ({ id: form.id, name: form.name }))}
+              canEdit={userCan(user, 'products.edit')}
+            />
+          </div>
+        }
       />
-
-      <ProductCountryPricing
-        productId={product.id}
-        rows={countryRows}
-        forms={forms.map((form) => ({ id: form.id, name: form.name }))}
-        canEdit={userCan(user, 'products.edit')}
-      />
-    </div>
+    </>
   );
 }

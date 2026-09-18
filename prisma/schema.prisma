@@ -924,6 +924,8 @@ model Product {
   ogImage          Media?            @relation("ProductOgImage", fields: [ogImageId], references: [id], onDelete: SetNull)
   ctaForm          Form?             @relation("ProductCtaForm", fields: [ctaFormId], references: [id], onDelete: SetNull)
   variants         ProductVariant[]
+  /// Free-form builder sections rendered under the fixed detail block.
+  sections         ProductSection[]
   /// Per-market availability, pricing, copy and SEO. The row above stays the
   /// single global master for the product's identity and shared specification.
   countries        ProductCountry[]
@@ -939,6 +941,35 @@ model Product {
   @@index([isFeatured, featuredOrder])
   @@index([sortOrder])
   @@index([deletedAt])
+}
+
+/// Free-form sections stacked under a product's fixed detail block, using the
+/// same block registry the page builder uses.
+///
+/// Attached to the product rather than to ProductCountry: a product is one
+/// global row, so its sections are authored once and rendered in every market.
+/// The internal links inside them are rewritten per market at the render
+/// boundary by `localiseContent`, exactly as a page's sections are — so one
+/// set of content still produces market-correct URLs.
+model ProductSection {
+  id        String  @id @default(cuid())
+  productId String
+  blockType String // registry key: "hero", "featureGrid", ...
+  name      String? // admin-facing label
+  sortOrder Int     @default(0)
+  isVisible Boolean @default(true)
+
+  // Block payload validated by the block registry's Zod schema
+  content  Json @default("{}")
+  // Presentation settings: background, spacing, width, alignment...
+  settings Json @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId, sortOrder])
 }
 
 model ProductVariant {

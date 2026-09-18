@@ -188,10 +188,40 @@ export async function HeroBlock({ content, ctx }: { content: HeroContent; ctx: B
       aside
     );
 
+  /*
+   * The split is positional, not logical: `imagePlacement: 'left'` swaps the
+   * two children with order utilities, so the wider track has to swap with
+   * them or a 60/40 hero would come out 40/60 the moment the aside moved left.
+   * Both orientations are spelled out as whole class names because Tailwind
+   * generates from the literal strings it finds in the source.
+   */
+  const asideFirst = content.imagePlacement === 'left';
+  const splitClass = asideFirst
+    ? SPLIT_ASIDE_FIRST[content.splitRatio]
+    : SPLIT_COPY_FIRST[content.splitRatio];
+
   return (
-    <div className="grid items-center gap-10 lg:grid-cols-2 lg:gap-14">
-      <div className={cn(content.imagePlacement === 'left' && 'lg:order-2')}>{copy}</div>
-      <div className={cn(content.imagePlacement === 'left' && 'lg:order-1')}>{asideContent}</div>
+    <div className={cn('grid items-center gap-10 lg:gap-14', splitClass)}>
+      <div className={cn(asideFirst && 'lg:order-2')}>{copy}</div>
+      <div className={cn(asideFirst && 'lg:order-1')}>{asideContent}</div>
     </div>
   );
 }
+
+/** Copy in the first track: the copy's share comes first. */
+const SPLIT_COPY_FIRST: Record<HeroContent['splitRatio'], string> = {
+  '50': 'lg:grid-cols-2',
+  '55': 'lg:grid-cols-[11fr_9fr]',
+  '60': 'lg:grid-cols-[3fr_2fr]',
+  '65': 'lg:grid-cols-[13fr_7fr]',
+  '70': 'lg:grid-cols-[7fr_3fr]',
+};
+
+/** Aside in the first track: the same ratios, mirrored. */
+const SPLIT_ASIDE_FIRST: Record<HeroContent['splitRatio'], string> = {
+  '50': 'lg:grid-cols-2',
+  '55': 'lg:grid-cols-[9fr_11fr]',
+  '60': 'lg:grid-cols-[2fr_3fr]',
+  '65': 'lg:grid-cols-[7fr_13fr]',
+  '70': 'lg:grid-cols-[3fr_7fr]',
+};

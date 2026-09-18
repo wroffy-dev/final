@@ -7,8 +7,10 @@ import {
   getPublicProduct,
   selectProducts,
   getProductSeo,
+  getProductSections,
   findLiveProductCountries,
 } from '@/lib/services/products';
+import { SectionList } from '@/components/cms/section-renderer';
 import { getMediaByIds } from '@/lib/services/media';
 import { getWebsiteSettings } from '@/lib/services/settings';
 import { buildMetadata, absoluteCountryUrl } from '@/lib/seo/metadata';
@@ -68,11 +70,12 @@ export async function ProductSurface({
   ]);
   if (!product) notFound();
 
-  const [related, gallery] = await Promise.all([
+  const [related, gallery, sections] = await Promise.all([
     selectProducts(country, { source: 'featured', limit: 4 }).then((rows) =>
       rows.filter((p) => p.id !== product.id).slice(0, 3),
     ),
     getMediaByIds(product.galleryIds),
+    getProductSections(product.id),
   ]);
 
   // Preserve the order the admin arranged in the gallery picker.
@@ -225,9 +228,23 @@ export async function ProductSurface({
             </div>
           </aside>
         </div>
+      </div>
 
-        {related.length > 0 ? (
-          <section className="mt-20" aria-labelledby="related-heading">
+      {/*
+       * The builder sections, between the fixed specification above and the
+       * related products below.
+       *
+       * Rendered outside the product's own container because a section paints
+       * its own full-bleed background and centres its content with `cms-container`
+       * — the same arrangement a CMS page uses. `allowFirst` is false: the
+       * product name above is already this page's <h1>, so no section may claim
+       * a second one just by being first in the list.
+       */}
+      <SectionList sections={sections} country={country} allowFirst={false} />
+
+      {related.length > 0 ? (
+        <div className="mx-auto max-w-6xl px-4 pb-14 sm:px-6 sm:pb-20">
+          <section aria-labelledby="related-heading">
             <h2 id="related-heading" className="font-heading text-2xl font-bold text-content">
               Other plans
             </h2>
@@ -237,8 +254,8 @@ export async function ProductSurface({
               ))}
             </div>
           </section>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
 
       <JsonLd
         data={[
